@@ -178,10 +178,14 @@ def update_worker(
     if turns is not None:
         sets.append("turns = ?")
         args.append(turns)
+    if not sets:
+        raise ValueError("update_worker requires at least one field to update")
     sets.append("updated_at = ?")
     args.append(now_iso())
     args.append(worker_id)
-    conn.execute(f"UPDATE workers SET {', '.join(sets)} WHERE id = ?", args)
+    cur = conn.execute(f"UPDATE workers SET {', '.join(sets)} WHERE id = ?", args)
+    if cur.rowcount == 0:
+        raise KeyError(f"worker {worker_id} not found")
 
 
 # ---- Events ----

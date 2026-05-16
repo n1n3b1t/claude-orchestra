@@ -76,6 +76,20 @@ class TestWorkers:
         rows = state.list_workers(conn)
         assert {w.id for w in rows} == {"w1", "w2"}
 
+    def test_update_worker_missing_raises(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        with pytest.raises(KeyError):
+            state.update_worker(conn, "ghost", status="working")
+
+    def test_update_worker_no_fields_raises(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch=None, pane_target="s:1",
+        )
+        with pytest.raises(ValueError):
+            state.update_worker(conn, "w1")
+
 
 class TestEvents:
     def test_record_event_with_payload(self, tmp_db: Path) -> None:
