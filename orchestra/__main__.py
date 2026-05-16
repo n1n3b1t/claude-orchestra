@@ -4,8 +4,7 @@ from __future__ import annotations
 import typer
 
 from orchestra import __version__
-
-app = typer.Typer(help="Tmux-based orchestrator for parallel Claude Code workers.")
+from orchestra.cli import app
 
 
 @app.callback(invoke_without_command=True)

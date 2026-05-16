@@ -32,6 +32,13 @@ class TestSend:
             check=True, capture_output=True, text=True,
         )
 
+    def test_send_ctrl_c(self, fake_run):
+        tmux.send_ctrl_c("s:1")
+        fake_run.assert_called_once_with(
+            ["tmux", "send-keys", "-t", "s:1", "C-c"],
+            check=True, capture_output=True, text=True,
+        )
+
     def test_send_multiline_uses_load_paste_then_enter(self, fake_run):
         tmux.send_multiline("s:1", "line1\nline2", buffer_name="b1")
         # Three calls in order: load-buffer, paste-buffer, send-keys Enter

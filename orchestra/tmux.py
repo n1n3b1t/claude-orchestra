@@ -50,6 +50,10 @@ def send_enter(target: str) -> None:
     _run(["tmux", "send-keys", "-t", target, "Enter"])
 
 
+def send_ctrl_c(target: str) -> None:
+    _run(["tmux", "send-keys", "-t", target, "C-c"])
+
+
 def send_multiline(target: str, text: str, *, buffer_name: str | None = None) -> None:
     """Load text into a named tmux buffer and paste it, then submit with Enter.
 
