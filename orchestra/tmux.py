@@ -5,6 +5,7 @@ Business logic (retries, choreography, idle policy) lives in higher layers.
 """
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 
@@ -49,12 +50,17 @@ def send_enter(target: str) -> None:
     _run(["tmux", "send-keys", "-t", target, "Enter"])
 
 
-def send_multiline(target: str, text: str, *, buffer_name: str = "orch") -> None:
+def send_multiline(target: str, text: str, *, buffer_name: str | None = None) -> None:
     """Load text into a named tmux buffer and paste it, then submit with Enter.
 
     send-keys breaks on embedded newlines; paste-buffer is the only reliable path.
     -p enables paste bracket mode (no shell interpretation); -d deletes the buffer.
+
+    buffer_name defaults to a target-derived name (``orch_<sanitised-target>``) so
+    that concurrent calls for different panes never share a buffer and race.
     """
+    if buffer_name is None:
+        buffer_name = "orch_" + re.sub(r"[^A-Za-z0-9_]", "_", target)
     _run(["tmux", "load-buffer", "-b", buffer_name, "-"], input=text)
     _run(["tmux", "paste-buffer", "-p", "-d", "-b", buffer_name, "-t", target])
     _run(["tmux", "send-keys", "-t", target, "Enter"])
@@ -69,7 +75,11 @@ def capture(target: str, lines: int = 80) -> str:
 
 
 def is_idle(target: str) -> bool:
-    """Cheap idle heuristic: spinner overrides everything; otherwise look for prompt."""
+    """Cheap idle heuristic: spinner overrides everything; otherwise look for prompt.
+
+    Safe-default contract: an empty pane (no spinner AND no prompt) returns ``False``
+    — i.e. "assume busy".  Callers own the retry / timeout policy.
+    """
     text = capture(target, lines=12)
     if _SPINNER_RE.search(text):
         return False
@@ -91,7 +101,19 @@ def ensure_session(name: str, *, cwd: str) -> None:
         _run(["tmux", "new-session", "-d", "-s", name, "-c", cwd])
 
 
+def kill_window(target: str) -> None:
+    """Kill the window at `target`.  Tolerates a missing window (no raise)."""
+    with contextlib.suppress(subprocess.CalledProcessError):
+        _run(["tmux", "kill-window", "-t", target])
+
+
 def new_window(*, session: str, name: str, cwd: str) -> str:
-    """Create a new window in `session`. Returns its target string."""
+    """Create a new window in `session`. Returns its target string.
+
+    Caller MUST ensure no window with ``name`` exists in ``session`` (use
+    ``kill_window`` first if needed).  If a same-named window already exists
+    tmux silently auto-suffixes the new window (e.g. ``w1 (2)``), making the
+    returned target point to the *original* window rather than the new one.
+    """
     _run(["tmux", "new-window", "-t", f"{session}:", "-n", name, "-c", cwd])
     return f"{session}:{name}"

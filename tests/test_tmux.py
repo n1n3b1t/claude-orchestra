@@ -45,6 +45,12 @@ class TestSend:
         enter_args, _ = calls[2]
         assert enter_args[0] == ["tmux", "send-keys", "-t", "s:1", "Enter"]
 
+    def test_send_multiline_default_buffer_name_derived_from_target(self, fake_run):
+        tmux.send_multiline("orch-proj:w1", "hi")
+        # The first call (load-buffer) should have the derived buffer name
+        load_args, _ = fake_run.call_args_list[0]
+        assert load_args[0][3] == "orch_orch_proj_w1"
+
 
 class TestCapture:
     def test_capture_strips_ansi(self, monkeypatch):
@@ -124,3 +130,20 @@ class TestSession:
             ["tmux", "new-window", "-t", "orch-x:", "-n", "w1", "-c", "/tmp"],
             check=True, capture_output=True, text=True,
         )
+
+
+class TestKillWindow:
+    def test_kill_window_calls_correct_argv(self, fake_run):
+        tmux.kill_window("s:1")
+        fake_run.assert_called_once_with(
+            ["tmux", "kill-window", "-t", "s:1"],
+            check=True, capture_output=True, text=True,
+        )
+
+    def test_kill_window_tolerates_missing(self, monkeypatch):
+        import subprocess
+        def boom(argv, **kw):
+            raise subprocess.CalledProcessError(1, argv)
+        monkeypatch.setattr(subprocess, "run", boom)
+        # Must not raise
+        tmux.kill_window("s:nonexistent")
