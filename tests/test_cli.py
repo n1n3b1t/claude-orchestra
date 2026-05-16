@@ -47,6 +47,24 @@ class TestSpawn:
         assert called["worker_id"] == "w1"
         assert called["model"] == "sonnet"
         assert called["task"] == "do thing"
+        assert called["project_root"] == str(tmp_path)
+        assert called["session_name"] == f"orch-{tmp_path.name.lower()}"
+        assert called["state_db"] == tmp_path / ".orchestra" / "state.db"
+        assert called["ctx_files"] == []
+
+    def test_spawn_passes_context_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        _init_in(tmp_path, monkeypatch)
+        called: dict = {}
+
+        def fake_spawn(conn, **kw):
+            called.update(kw)
+
+        monkeypatch.setattr(cli.spawn, "spawn_worker", fake_spawn)
+        result = runner.invoke(
+            app, ["spawn", "w1", "sonnet", "do", "--context", "a.py", "--context", "b.py"]
+        )
+        assert result.exit_code == 0, result.output
+        assert called["ctx_files"] == ["a.py", "b.py"]
 
 
 class TestStatus:
@@ -131,6 +149,32 @@ class TestWorkerCommands:
         opens = state.list_open_escalations(conn)
         assert len(opens) == 1
 
+    def test_escalate_non_blocking_keeps_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        db = tmp_path / ".orchestra" / "state.db"
+        conn = state.connect(db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch=None, pane_target="orch-x:w1",
+        )
+        state.update_worker(conn, "w1", status="working")
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(db))
+        result = runner.invoke(
+            app,
+            ["worker", "escalate", "--question", "minor q"],
+        )
+        assert result.exit_code == 0, result.output
+        w = state.get_worker(conn, "w1")
+        assert w is not None
+        # status MUST still be "working" — not "waiting"
+        assert w.status == "working"
+        opens = state.list_open_escalations(conn)
+        assert len(opens) == 1
+        assert opens[0].blocking is False
+
 
 class TestStop:
     def test_sends_ctrl_c_twice_and_records(
@@ -169,6 +213,20 @@ class TestRequiresInit:
         result = runner.invoke(app, ["stop", "w1"])
         assert result.exit_code == 2
         assert "orchestra init" in result.output
+
+    def test_spawn_fails_without_init(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["spawn", "w1", "sonnet", "do"])
+        assert result.exit_code == 2
+        assert "run `orchestra init` first" in result.output.lower() or \
+               "run 'orchestra init' first" in result.output.lower() or \
+               "orchestra init" in result.output.lower()
+
+    def test_tail_fails_without_init(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["tail", "w1"])
+        assert result.exit_code == 2
+        assert "orchestra init" in result.output.lower()
 
 
 class TestTail:
