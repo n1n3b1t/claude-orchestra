@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -97,8 +98,36 @@ class TestHappyPath:
         # The boot command goes through send_literal as the first send to the new pane.
         sent_texts = [c.args[1] for c in fake_tmux.send_literal.call_args_list]
         boot_cmd = sent_texts[0]
-        assert "ORCHESTRA_WORKER_ID='w1'" in boot_cmd
-        assert "ORCHESTRA_STATE_DB=" in boot_cmd
+        expected_id = f"ORCHESTRA_WORKER_ID={shlex.quote('w1')}"
+        expected_db = f"ORCHESTRA_STATE_DB={shlex.quote(str(tmp_db))}"
+        assert expected_id in boot_cmd
+        assert expected_db in boot_cmd
+        assert "claude --dangerously-skip-permissions" in boot_cmd
+
+    def test_boot_command_handles_apostrophe_in_worker_id(
+        self, tmp_db, fake_tmux, monkeypatch
+    ):
+        conn = _open(tmp_db)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        monkeypatch.setattr(spawn, "_wait_first_status", lambda *a, **kw: True)
+
+        worker_id = "o'brien"
+        spawn.spawn_worker(
+            conn,
+            worker_id=worker_id,
+            model="sonnet",
+            task="t",
+            project_root="/tmp/proj",
+            state_db=tmp_db,
+            ctx_files=[],
+            session_name="orch-proj",
+        )
+
+        sent_texts = [c.args[1] for c in fake_tmux.send_literal.call_args_list]
+        boot_cmd = sent_texts[0]
+        # shlex.quote on "o'brien" produces proper shell escaping
+        expected_id = f"ORCHESTRA_WORKER_ID={shlex.quote(worker_id)}"
+        assert expected_id in boot_cmd
         assert "claude --dangerously-skip-permissions" in boot_cmd
 
 

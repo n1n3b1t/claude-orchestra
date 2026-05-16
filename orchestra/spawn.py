@@ -12,6 +12,7 @@ Seven steps:
 """
 from __future__ import annotations
 
+import shlex
 import sqlite3
 import time
 from pathlib import Path
@@ -28,8 +29,8 @@ FIRST_STATUS_POLL_S = 5.0
 
 def _boot_command(worker_id: str, state_db: Path) -> str:
     return (
-        f"ORCHESTRA_WORKER_ID='{worker_id}' "
-        f"ORCHESTRA_STATE_DB='{state_db}' "
+        f"ORCHESTRA_WORKER_ID={shlex.quote(worker_id)} "
+        f"ORCHESTRA_STATE_DB={shlex.quote(str(state_db))} "
         f"claude --dangerously-skip-permissions"
     )
 
@@ -131,8 +132,8 @@ def spawn_worker(
 
     # Step 7: wait for first status event from the worker
     if _wait_first_status(conn, worker_id):
-        state.update_worker(conn, worker_id, status="working")
         state.record_event(conn, "spawn_ok", worker_id=worker_id)
+        state.update_worker(conn, worker_id, status="working")
     else:
         state.update_worker(conn, worker_id, status="stale_spawn")
         state.record_event(conn, "spawn_first_status_timeout", worker_id=worker_id)
