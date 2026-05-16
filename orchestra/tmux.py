@@ -31,13 +31,20 @@ def _strip_ansi(text: str) -> str:
 
 def _run(argv: list[str], *, input: str | None = None) -> subprocess.CompletedProcess[str]:
     kwargs: dict[str, object] = {
-        "check": True,
         "capture_output": True,
         "text": True,
     }
     if input is not None:
         kwargs["input"] = input
-    return subprocess.run(argv, **kwargs)  # type: ignore[call-overload,no-any-return]
+    proc: subprocess.CompletedProcess[str] = subprocess.run(argv, **kwargs)  # type: ignore[call-overload]
+    if proc.returncode != 0:
+        # Surface tmux's stderr in the exception so failures are debuggable.
+        # check=True hides it inside e.stderr; we put it in the message.
+        raise subprocess.CalledProcessError(
+            proc.returncode, argv, output=proc.stdout,
+            stderr=f"{proc.stderr.strip()}  (argv={argv!r})",
+        )
+    return proc
 
 
 # ---- send ----

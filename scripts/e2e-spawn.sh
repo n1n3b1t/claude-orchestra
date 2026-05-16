@@ -16,7 +16,10 @@ if ! command -v orchestra >/dev/null 2>&1; then
 fi
 
 TMPDIR_E2E=$(mktemp -d)
-SESSION="orch-$(basename "$TMPDIR_E2E" | tr '[:upper:]' '[:lower:]')"
+# Sanitise to [a-z0-9-] so tmux's session.window target syntax stays unambiguous.
+# Must match orchestra.cli._session_name_for exactly.
+BASE=$(basename "$TMPDIR_E2E" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')
+SESSION="orch-${BASE:-default}"
 trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true; rm -rf "$TMPDIR_E2E"' EXIT
 
 cd "$TMPDIR_E2E"

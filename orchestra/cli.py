@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -34,6 +35,17 @@ def _orch_dir(cwd: Path | None = None) -> Path:
 
 def _state_db(cwd: Path | None = None) -> Path:
     return _orch_dir(cwd) / "state.db"
+
+
+def _session_name_for(cwd: Path) -> str:
+    """tmux session name derived from cwd basename.
+
+    Sanitizes to ``[a-z0-9-]`` so the dot in ``mktemp -d``-style basenames
+    (e.g. ``tmp.UUR8ZsRLFe``) does not collide with tmux's ``session.window``
+    target syntax. Falls back to ``orch`` if nothing useful remains.
+    """
+    base = re.sub(r"[^a-z0-9-]+", "-", cwd.name.lower()).strip("-")
+    return f"orch-{base}" if base else "orch"
 
 
 def _require_initialized() -> Path:
@@ -80,7 +92,7 @@ def spawn_command(
 ) -> None:
     """Spawn a worker into a new tmux window."""
     project_root = str(Path.cwd())
-    session_name = f"orch-{Path.cwd().name.lower()}"
+    session_name = _session_name_for(Path.cwd())
     with _open_db() as conn:
         db = _state_db()
         spawn.spawn_worker(

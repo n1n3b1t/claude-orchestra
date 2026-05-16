@@ -33,6 +33,21 @@ class TestInit:
         assert runner.invoke(app, ["init"]).exit_code == 0
 
 
+class TestSessionNameFor:
+    """The session-name sanitiser keeps tmux's `session.window` target syntax safe."""
+
+    def test_drops_dots(self):
+        # mktemp -d-style basename has a literal dot — tmux splits on it
+        assert cli._session_name_for(Path("/tmp/tmp.UUR8ZsRLFe")) == "orch-tmp-uur8zsrlfe"
+
+    def test_collapses_punctuation(self):
+        assert cli._session_name_for(Path("/work/My Project (v2)!")) == "orch-my-project-v2"
+
+    def test_fallback_for_empty(self):
+        # Root '/' has empty basename, sanitiser must fall back to 'orch'
+        assert cli._session_name_for(Path("/")) == "orch"
+
+
 class TestSpawn:
     def test_invokes_spawn_worker(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         _init_in(tmp_path, monkeypatch)
@@ -48,7 +63,7 @@ class TestSpawn:
         assert called["model"] == "sonnet"
         assert called["task"] == "do thing"
         assert called["project_root"] == str(tmp_path)
-        assert called["session_name"] == f"orch-{tmp_path.name.lower()}"
+        assert called["session_name"] == cli._session_name_for(tmp_path)
         assert called["state_db"] == tmp_path / ".orchestra" / "state.db"
         assert called["ctx_files"] == []
 

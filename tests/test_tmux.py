@@ -22,21 +22,21 @@ class TestSend:
         tmux.send_literal("s:1", "hello")
         fake_run.assert_called_once_with(
             ["tmux", "send-keys", "-t", "s:1", "-l", "hello"],
-            check=True, capture_output=True, text=True,
+            capture_output=True, text=True,
         )
 
     def test_send_enter(self, fake_run):
         tmux.send_enter("s:1")
         fake_run.assert_called_once_with(
             ["tmux", "send-keys", "-t", "s:1", "Enter"],
-            check=True, capture_output=True, text=True,
+            capture_output=True, text=True,
         )
 
     def test_send_ctrl_c(self, fake_run):
         tmux.send_ctrl_c("s:1")
         fake_run.assert_called_once_with(
             ["tmux", "send-keys", "-t", "s:1", "C-c"],
-            check=True, capture_output=True, text=True,
+            capture_output=True, text=True,
         )
 
     def test_send_multiline_uses_load_paste_then_enter(self, fake_run):
@@ -135,7 +135,7 @@ class TestSession:
         assert target == "orch-x:w1"
         fake_run.assert_called_once_with(
             ["tmux", "new-window", "-t", "orch-x:", "-n", "w1", "-c", "/tmp"],
-            check=True, capture_output=True, text=True,
+            capture_output=True, text=True,
         )
 
 
@@ -144,7 +144,7 @@ class TestKillWindow:
         tmux.kill_window("s:1")
         fake_run.assert_called_once_with(
             ["tmux", "kill-window", "-t", "s:1"],
-            check=True, capture_output=True, text=True,
+            capture_output=True, text=True,
         )
 
     def test_kill_window_tolerates_missing(self, monkeypatch):
