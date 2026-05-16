@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -41,6 +44,16 @@ def _require_initialized() -> Path:
     return db
 
 
+@contextmanager
+def _open_db() -> Generator[sqlite3.Connection, None, None]:
+    db = _require_initialized()
+    conn = state.connect(db)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 @app.command()
 def init() -> None:
     """Initialize .orchestra/ in the current directory."""
@@ -66,11 +79,10 @@ def spawn_command(
     ),
 ) -> None:
     """Spawn a worker into a new tmux window."""
-    db = _require_initialized()
     project_root = str(Path.cwd())
     session_name = f"orch-{Path.cwd().name.lower()}"
-    conn = state.connect(db)
-    try:
+    with _open_db() as conn:
+        db = _state_db()
         spawn.spawn_worker(
             conn,
             worker_id=worker_id,
@@ -82,71 +94,76 @@ def spawn_command(
             session_name=session_name,
         )
         typer.echo(f"spawn {worker_id} → {session_name}:{worker_id}")
-    finally:
-        conn.close()
 
 
 @app.command()
 def status(worker: str | None = typer.Option(None, "--worker")) -> None:
     """Print worker status table; with --worker, print detail."""
-    db = _require_initialized()
-    conn = state.connect(db)
-    if worker:
-        w = state.get_worker(conn, worker)
-        if w is None:
-            typer.echo(f"no such worker: {worker}", err=True)
-            raise typer.Exit(2)
-        typer.echo(
-            f"{w.id}  {w.status}  turns={w.turns}  branch={w.branch}\n"
-            f"  task: {w.task}\n  progress: {w.progress}"
-        )
-        typer.echo("\nrecent events:")
-        for e in state.list_events(conn, worker_id=worker)[-20:]:
-            typer.echo(f"  {e.ts}  {e.kind}  {e.payload}")
-    else:
-        rows = state.list_workers(conn)
-        if not rows:
-            typer.echo("(no workers)")
-            return
-        for w in rows:
+    with _open_db() as conn:
+        if worker:
+            w = state.get_worker(conn, worker)
+            if w is None:
+                typer.echo(f"no such worker: {worker}", err=True)
+                raise typer.Exit(2)
             typer.echo(
-                f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  {w.progress or ''}"
+                f"{w.id}  {w.status}  turns={w.turns}  branch={w.branch}\n"
+                f"  task: {w.task}\n  progress: {w.progress}"
             )
+            typer.echo("\nrecent events:")
+            for e in state.list_events(conn, worker_id=worker)[-20:]:
+                typer.echo(f"  {e.ts}  {e.kind}  {e.payload}")
+        else:
+            rows = state.list_workers(conn)
+            if not rows:
+                typer.echo("(no workers)")
+                return
+            for w in rows:
+                typer.echo(
+                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  {w.progress or ''}"
+                )
 
 
 @app.command()
 def stop(worker_id: str = typer.Argument(..., metavar="ID")) -> None:
     """Send Ctrl-C twice to the worker pane and mark stopped."""
-    db = _require_initialized()
-    conn = state.connect(db)
-    w = state.get_worker(conn, worker_id)
-    if w is None:
-        typer.echo(f"no such worker: {worker_id}", err=True)
-        raise typer.Exit(2)
-    try:
-        tmux.send_ctrl_c(w.pane_target)
-        time.sleep(0.5)
-        tmux.send_ctrl_c(w.pane_target)
-    except subprocess.CalledProcessError as e:
-        state.record_event(conn, "stop_send_failed", worker_id=worker_id, error=repr(e))
-    state.update_worker(conn, worker_id, status="stopped")
-    state.record_event(conn, "stopped", worker_id=worker_id)
-    typer.echo(f"stopped {worker_id}")
+    with _open_db() as conn:
+        w = state.get_worker(conn, worker_id)
+        if w is None:
+            typer.echo(f"no such worker: {worker_id}", err=True)
+            raise typer.Exit(2)
+        signaled = True
+        try:
+            tmux.send_ctrl_c(w.pane_target)
+            time.sleep(0.5)
+            tmux.send_ctrl_c(w.pane_target)
+        except subprocess.CalledProcessError as e:
+            signaled = False
+            state.record_event(conn, "stop_send_failed", worker_id=worker_id, error=repr(e))
+        if signaled:
+            state.update_worker(conn, worker_id, status="stopped")
+            state.record_event(conn, "stopped", worker_id=worker_id)
+            typer.echo(f"stopped {worker_id}")
+        else:
+            state.update_worker(conn, worker_id, status="stop_send_failed")
+            typer.echo(
+                f"warning: failed to send Ctrl-C to {w.pane_target} — worker may still be running",
+                err=True,
+            )
+            raise typer.Exit(1)
 
 
 @app.command()
 def tail(
     worker_id: str = typer.Argument(..., metavar="ID"),
-    lines: int = typer.Argument(80),
+    lines: int = typer.Option(80, "--lines", "-n"),
 ) -> None:
     """Print the last N lines of the worker's pane (one-shot)."""
-    db = _require_initialized()
-    conn = state.connect(db)
-    w = state.get_worker(conn, worker_id)
-    if w is None:
-        typer.echo(f"no such worker: {worker_id}", err=True)
-        raise typer.Exit(2)
-    typer.echo(tmux.capture(w.pane_target, lines=lines))
+    with _open_db() as conn:
+        w = state.get_worker(conn, worker_id)
+        if w is None:
+            typer.echo(f"no such worker: {worker_id}", err=True)
+            raise typer.Exit(2)
+        typer.echo(tmux.capture(w.pane_target, lines=lines))
 
 
 @app.command()
@@ -183,8 +200,11 @@ def worker_status(
     """Update worker progress and turn count."""
     wid, db = _worker_env()
     conn = state.connect(db)
-    state.update_worker(conn, wid, progress=progress, turns=turns)
-    state.record_event(conn, "status", worker_id=wid, progress=progress, turns=turns)
+    try:
+        state.update_worker(conn, wid, progress=progress, turns=turns)
+        state.record_event(conn, "status", worker_id=wid, progress=progress, turns=turns)
+    finally:
+        conn.close()
 
 
 @worker_app.command("escalate")
@@ -196,12 +216,15 @@ def worker_escalate(
     """Escalate a question to the user."""
     wid, db = _worker_env()
     conn = state.connect(db)
-    esc = state.create_escalation(
-        conn, worker_id=wid, question=question, context=context, blocking=blocking,
-    )
-    if blocking:
-        state.update_worker(conn, wid, status="waiting")
-    state.record_event(
-        conn, "escalation", worker_id=wid,
-        escalation_id=esc.id, blocking=blocking, question=question,
-    )
+    try:
+        esc = state.create_escalation(
+            conn, worker_id=wid, question=question, context=context, blocking=blocking,
+        )
+        if blocking:
+            state.update_worker(conn, wid, status="waiting")
+        state.record_event(
+            conn, "escalation", worker_id=wid,
+            escalation_id=esc.id, blocking=blocking, question=question,
+        )
+    finally:
+        conn.close()

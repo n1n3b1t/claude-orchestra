@@ -200,33 +200,54 @@ class TestStop:
         assert w is not None
         assert w.status == "stopped"
 
+    def test_stop_when_send_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        _init_in(tmp_path, monkeypatch)
+        db = tmp_path / ".orchestra" / "state.db"
+        conn = state.connect(db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch=None, pane_target="orch-x:w1",
+        )
+        conn.close()
+
+        import subprocess
+        tmux_mock = MagicMock()
+        tmux_mock.send_ctrl_c.side_effect = subprocess.CalledProcessError(1, ["tmux"])
+        monkeypatch.setattr(cli, "tmux", tmux_mock)
+
+        result = runner.invoke(app, ["stop", "w1"])
+        assert result.exit_code == 1
+        assert "may still be running" in result.output.lower() or "failed" in result.output.lower()
+        conn = state.connect(db)
+        w = state.get_worker(conn, "w1")
+        assert w is not None
+        assert w.status == "stop_send_failed"
+
 
 class TestRequiresInit:
     def test_status_exits_2_without_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 2
-        assert "orchestra init" in result.output
+        assert "run `orchestra init` first" in result.output
 
     def test_stop_exits_2_without_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["stop", "w1"])
         assert result.exit_code == 2
-        assert "orchestra init" in result.output
+        assert "run `orchestra init` first" in result.output
 
     def test_spawn_fails_without_init(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["spawn", "w1", "sonnet", "do"])
         assert result.exit_code == 2
-        assert "run `orchestra init` first" in result.output.lower() or \
-               "run 'orchestra init' first" in result.output.lower() or \
-               "orchestra init" in result.output.lower()
+        assert "run `orchestra init` first" in result.output
 
     def test_tail_fails_without_init(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["tail", "w1"])
         assert result.exit_code == 2
-        assert "orchestra init" in result.output.lower()
+        assert "run `orchestra init` first" in result.output
 
 
 class TestTail:
@@ -245,3 +266,19 @@ class TestTail:
         assert result.exit_code == 0, result.output
         assert "pane output here" in result.output
         tmux_mock.capture.assert_called_once_with("orch-x:w1", lines=80)
+
+    def test_tail_with_lines_option(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        _init_in(tmp_path, monkeypatch)
+        db = tmp_path / ".orchestra" / "state.db"
+        conn = state.connect(db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch=None, pane_target="orch-x:w1",
+        )
+        conn.close()
+        tmux_mock = MagicMock()
+        tmux_mock.capture.return_value = "screen"
+        monkeypatch.setattr(cli, "tmux", tmux_mock)
+        result = runner.invoke(app, ["tail", "w1", "-n", "200"])
+        assert result.exit_code == 0
+        tmux_mock.capture.assert_called_once_with("orch-x:w1", lines=200)
