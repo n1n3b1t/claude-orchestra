@@ -6,7 +6,7 @@
 
 **Architecture:** Single Python package `orchestra`. Project-local state under `.orchestra/state.db` (SQLite, WAL). One process per role: short-lived `spawn` and `worker` subcommands; long-lived `dash` (FastAPI). Workers shell out to `orchestra worker status …` to update SQLite. Dashboard reads SQLite and pushes events over SSE; pane peeks via short-poll calling `tmux capture-pane`.
 
-**Tech Stack:** Python 3.11, Typer (CLI), FastAPI + uvicorn (web), sse-starlette (event stream), Jinja2 (templates), sqlite3 (stdlib), pytest + pytest-asyncio (tests), ruff + mypy (lint/typecheck).
+**Tech Stack:** Python 3.10+, Typer (CLI), FastAPI + uvicorn (web), sse-starlette (event stream), Jinja2 (templates), sqlite3 (stdlib), pytest + pytest-asyncio (tests), ruff + mypy (lint/typecheck).
 
 **Reference:** `docs/superpowers/specs/2026-05-16-claude-orchestra-design.md` (v0 design spec).
 
@@ -15,7 +15,7 @@
 ## Conventions
 
 - All file paths are absolute relative to repo root `~/dev/claude-orchestra/`.
-- Python target: 3.11+. `from __future__ import annotations` everywhere.
+- Python target: 3.10+. `from __future__ import annotations` everywhere so PEP 604 union types (`str | None`) work at runtime on 3.10.
 - Imports sorted by `ruff` (isort rules); types via PEP 604 (`str | None`, not `Optional[str]`).
 - All test files in `tests/` mirror module names.
 - Each task ends with a commit. Commit messages follow `<area>: <imperative>` (e.g. `state: add escalation CRUD`).
@@ -55,7 +55,7 @@ build-backend = "setuptools.build_meta"
 name = "claude-orchestra"
 version = "0.1.0"
 description = "Tmux-based orchestrator for parallel Claude Code workers"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "MIT" }
 dependencies = [
@@ -87,13 +87,13 @@ orchestra = ["templates/*.html", "static/*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.10"
 strict = false
 
 [[tool.mypy.overrides]]
@@ -158,7 +158,6 @@ if __name__ == "__main__":
 """Shared pytest fixtures."""
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
