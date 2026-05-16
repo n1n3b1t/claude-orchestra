@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>claude-orchestra</title>
+<style>
+  body { font: 14px/1.4 ui-sans-serif, system-ui; margin: 1rem; background: #0f1115; color: #e6e6e6; }
+  h1 { font-size: 1.2rem; margin: 0 0 1rem 0; }
+  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .card { background: #181b23; border: 1px solid #2a2f3a; border-radius: 6px; padding: 0.75rem 1rem; }
+  .card h2 { font-size: 1rem; margin: 0 0 0.5rem 0; display: flex; gap: 0.5rem; align-items: baseline; }
+  .status { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 3px; background: #2a2f3a; }
+  .status.working { background: #1b6b3a; }
+  .status.waiting { background: #a06600; }
+  .status.error, .status.stale_spawn { background: #a02020; }
+  .status.stopped, .status.done { background: #444; }
+  pre { background: #0a0b0f; padding: 0.5rem; border-radius: 4px; overflow: auto; max-height: 22em; font-size: 12px; white-space: pre-wrap; }
+  .esc { margin-top: 0.5rem; padding: 0.5rem; border: 1px solid #a06600; border-radius: 4px; }
+  .esc textarea { width: 100%; height: 4em; background: #0a0b0f; color: #e6e6e6; border: 1px solid #2a2f3a; }
+  .events { margin-top: 0.5rem; max-height: 14em; overflow: auto; font-size: 12px; }
+  .events .ts { color: #888; margin-right: 0.5em; }
+</style>
+</head>
+<body>
+<h1>claude-orchestra</h1>
+<div id="grid" class="grid"></div>
+<script>
+const grid = document.getElementById('grid');
+const state = { workers: new Map() };
+
+function cardHtml(w, panes, events, escalations) {
+  return `
+    <div class="card" id="card-${w.id}">
+      <h2>${w.id} <span class="status ${w.status}">${w.status}</span>
+        <span style="margin-left:auto;color:#999;font-weight:normal">turns ${w.turns}</span></h2>
+      <div><b>task:</b> ${w.task}</div>
+      <div><b>progress:</b> ${w.progress ?? ''}</div>
+      <pre id="pane-${w.id}">${panes ?? ''}</pre>
+      <div id="events-${w.id}" class="events">${(events ?? []).map(e =>
+        `<div><span class="ts">${e.ts}</span>${e.kind}</div>`).join('')}</div>
+      ${(escalations ?? []).map(e => `
+        <div class="esc">
+          <div><b>escalation:</b> ${e.question}</div>
+          <div style="color:#bbb">${e.context ?? ''}</div>
+          <textarea id="ans-${e.id}"></textarea>
+          <button onclick="answer('${w.id}', ${e.id})">send</button>
+        </div>`).join('')}
+    </div>`;
+}
+
+async function refresh() {
+  const workers = await fetch('/api/workers').then(r => r.json());
+  for (const w of workers) {
+    const detail = await fetch('/api/workers/' + w.id).then(r => r.json());
+    const pane = await fetch('/api/workers/' + w.id + '/pane?lines=60').then(r => r.json());
+    const esc = await fetch('/api/workers/' + w.id + '/escalations?open=true').then(r => r.json());
+    let el = document.getElementById('card-' + w.id);
+    const html = cardHtml(w, pane.text, detail.events, esc);
+    if (el) el.outerHTML = html; else grid.insertAdjacentHTML('beforeend', html);
+  }
+}
+
+async function answer(workerId, escId) {
+  const ta = document.getElementById('ans-' + escId);
+  await fetch('/api/workers/' + workerId + '/answer', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({ escalation_id: escId, answer: ta.value }),
+  });
+  refresh();
+}
+
+const es = new EventSource('/api/stream');
+es.onmessage = () => refresh();
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
