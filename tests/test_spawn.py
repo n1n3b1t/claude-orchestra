@@ -157,3 +157,35 @@ class TestFirstStatusTimeout:
         assert worker.status == "stale_spawn"
         kinds = _kinds(conn, "w1")
         assert "spawn_first_status_timeout" in kinds
+
+
+class TestPromptInjectFailure:
+    def test_two_failures_mark_error(
+        self, tmp_db, tmp_orch_dir, fake_tmux, monkeypatch
+    ):
+        conn = _open(tmp_db)
+        # Both attempts raise — exhausts the (1, 2) retry loop
+        fake_tmux.send_multiline.side_effect = RuntimeError("buffer too big")
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="w1",
+            model="sonnet",
+            task="t",
+            project_root="/tmp/proj",
+            state_db=tmp_db,
+            ctx_files=[],
+            session_name="orch-proj",
+        )
+
+        worker = state.get_worker(conn, "w1")
+        assert worker is not None
+        assert worker.status == "error"
+        kinds = _kinds(conn, "w1")
+        assert "prompt_inject_failed" in kinds
+        # Two retry events recorded (one per failed attempt)
+        retry_events = [k for k in kinds if k == "prompt_inject_retry"]
+        assert len(retry_events) == 2
+        # send_multiline was actually invoked twice
+        assert fake_tmux.send_multiline.call_count == 2
