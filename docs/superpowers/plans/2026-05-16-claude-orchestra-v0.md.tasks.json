@@ -1,0 +1,61 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-16-claude-orchestra-v0.md",
+  "tasks": [
+    {
+      "id": 11,
+      "subject": "Task 1: Project scaffolding",
+      "status": "pending",
+      "description": "**Goal:** Create the Python package skeleton — pyproject.toml, orchestra/__init__.py, orchestra/__main__.py, tests/__init__.py, ruff + mypy config. After this task, `pip install -e .` succeeds and `orchestra --help` runs.\n\n**Files:**\n- Create: pyproject.toml\n- Create: orchestra/__init__.py\n- Create: orchestra/__main__.py\n- Create: tests/__init__.py\n- Create: tests/conftest.py\n\n**Acceptance Criteria:**\n- pip install -e . succeeds in clean venv\n- orchestra --version prints 'orchestra 0.1.0'\n- pytest runs (zero tests, zero failures)\n- ruff check . passes\n- mypy orchestra/ passes\n\n**Verify:** pip install -e . && orchestra --version && pytest -q && ruff check . && mypy orchestra/\n\n```json:metadata\n{\"files\": [\"pyproject.toml\", \"orchestra/__init__.py\", \"orchestra/__main__.py\", \"tests/__init__.py\", \"tests/conftest.py\"], \"verifyCommand\": \"pip install -e . && orchestra --version && pytest -q && ruff check . && mypy orchestra/\", \"acceptanceCriteria\": [\"pip install -e . succeeds\", \"orchestra --version prints orchestra 0.1.0\", \"pytest runs with zero failures\", \"ruff check . passes\", \"mypy orchestra/ passes\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 2: SQLite state layer",
+      "status": "pending",
+      "blockedBy": [11],
+      "description": "**Goal:** orchestra.state — connect to SQLite with WAL + busy_timeout, init schema (workers/events/escalations), CRUD wrappers returning frozen dataclasses, record_event(conn, kind, worker_id=None, **payload).\n\n**Files:**\n- Create: orchestra/state.py\n- Create: tests/test_state.py\n\n**Acceptance Criteria:** See plan Task 2. Connect with journal_mode=WAL + busy_timeout=5000; init_schema idempotent; Worker/Event/Escalation CRUD round-trip; record_event JSON-encodes payload; list_events filters by worker_id+since_id; resolve_escalation raises KeyError on missing/already-resolved; events_worker_ts index exists.\n\n**Verify:** pytest tests/test_state.py -v && mypy --strict orchestra/state.py\n\n```json:metadata\n{\"files\": [\"orchestra/state.py\", \"tests/test_state.py\"], \"verifyCommand\": \"pytest tests/test_state.py -v && mypy --strict orchestra/state.py\", \"acceptanceCriteria\": [\"connect sets WAL+busy_timeout\", \"init_schema idempotent\", \"Worker CRUD round-trips\", \"record_event JSON-encodes payload\", \"list_events filters worker_id+since_id\", \"Escalation create+resolve flow\", \"resolve_escalation KeyError on missing\", \"events_worker_ts index exists\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 3: Worker prompt template",
+      "status": "pending",
+      "blockedBy": [11],
+      "description": "**Goal:** orchestra.prompts.render_startup_prompt(...) returns the structured prompt for fresh workers. Pure function.\n\n**Files:**\n- Create: orchestra/prompts.py\n- Create: tests/test_prompts.py\n\n**Acceptance Criteria:** See plan Task 3. Prompt contains worker_id+task+branch+model+CLI command names; required rules (commit/push, no spawn, no end session); CONTEXT section only when ctx_files non-empty; no trailing newline.\n\n**Verify:** pytest tests/test_prompts.py -v\n\n```json:metadata\n{\"files\": [\"orchestra/prompts.py\", \"tests/test_prompts.py\"], \"verifyCommand\": \"pytest tests/test_prompts.py -v\", \"acceptanceCriteria\": [\"contains identity (id, task, branch, model)\", \"contains literal CLI commands\", \"contains required rules\", \"CONTEXT only when ctx_files non-empty\", \"no trailing newline\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 4: tmux driver primitives",
+      "status": "pending",
+      "blockedBy": [11],
+      "description": "**Goal:** orchestra.tmux — thin wrappers around subprocess.run(['tmux', ...]). No business logic.\n\n**Files:**\n- Create: orchestra/tmux.py\n- Create: tests/test_tmux.py\n\n**Acceptance Criteria:** See plan Task 4. send_literal/send_enter with exact argv; send_multiline via load-buffer/paste-buffer-p-d/Enter; capture strips ANSI; is_idle spinner-overrides-prompt; pane_current_command; ensure_session creates only when has-session fails; new_window returns target. send_ctrl_c added during Task 6.\n\n**Verify:** pytest tests/test_tmux.py -v && mypy --strict orchestra/tmux.py\n\n```json:metadata\n{\"files\": [\"orchestra/tmux.py\", \"tests/test_tmux.py\"], \"verifyCommand\": \"pytest tests/test_tmux.py -v && mypy --strict orchestra/tmux.py\", \"acceptanceCriteria\": [\"send_literal -l no Enter\", \"send_enter literal Enter\", \"send_multiline 3-step load+paste+Enter\", \"capture strips ANSI\", \"is_idle spinner-first\", \"pane_current_command\", \"ensure_session conditional create\", \"new_window returns session:name\"]}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 5: Worker spawn choreography",
+      "status": "pending",
+      "blockedBy": [5, 6, 7],
+      "description": "**Goal:** orchestra.spawn.spawn_worker performs the 7-step boot dance with bounded waits.\n\n**Files:**\n- Create: orchestra/spawn.py\n- Create: tests/test_spawn.py\n\n**Acceptance Criteria:** See plan Task 5. Event sequence spawn_start→spawn_window→spawn_idle→model_switched→prompt_injected→spawn_ok; boot timeout→status=error+spawn_timeout(last_screen); first-status timeout→status=stale_spawn; double-Enter after spawn_idle; 1 retry on send_multiline; boot cmd has ORCHESTRA_WORKER_ID+ORCHESTRA_STATE_DB+--dangerously-skip-permissions.\n\n**Verify:** pytest tests/test_spawn.py -v && mypy --strict orchestra/spawn.py\n\n```json:metadata\n{\"files\": [\"orchestra/spawn.py\", \"tests/test_spawn.py\"], \"verifyCommand\": \"pytest tests/test_spawn.py -v && mypy --strict orchestra/spawn.py\", \"acceptanceCriteria\": [\"event sequence on success\", \"boot timeout -> error+spawn_timeout\", \"first-status timeout -> stale_spawn\", \"double-Enter after spawn_idle\", \"send_multiline 1 retry then prompt_inject_failed\", \"boot cmd has env vars + --dangerously-skip-permissions\"]}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 6: CLI commands",
+      "status": "pending",
+      "blockedBy": [6, 8],
+      "description": "**Goal:** Typer command tree (init, spawn, status, tail, stop, dash, worker status, worker escalate).\n\n**Files:**\n- Modify: orchestra/__main__.py\n- Create: orchestra/cli.py\n- Modify: orchestra/tmux.py (add send_ctrl_c)\n- Create: tests/test_cli.py\n\n**Acceptance Criteria:** See plan Task 6. init creates .orchestra/state.db+config.toml idempotently; spawn delegates to spawn.spawn_worker; status table + --worker detail; stop sends C-c twice; worker subcommands require env (exit 2 otherwise); commands fail with 'run orchestra init first' on missing DB.\n\n**Verify:** pytest tests/test_cli.py -v\n\n```json:metadata\n{\"files\": [\"orchestra/cli.py\", \"orchestra/__main__.py\", \"orchestra/tmux.py\", \"tests/test_cli.py\"], \"verifyCommand\": \"pytest tests/test_cli.py -v\", \"acceptanceCriteria\": [\"init creates .orchestra idempotently\", \"spawn delegates\", \"status table + --worker detail\", \"stop sends C-c x2 + event\", \"tail prints capture\", \"dash launches uvicorn\", \"worker status writes event\", \"worker escalate creates escalation + waiting on blocking\", \"missing env -> exit 2\", \"missing DB -> exit 2\"]}\n```"
+    },
+    {
+      "id": 10,
+      "subject": "Task 7: Web dashboard",
+      "status": "pending",
+      "blockedBy": [5, 6],
+      "description": "**Goal:** FastAPI app: REST + SSE + minimal HTML dashboard.\n\n**Files:**\n- Create: orchestra/web.py\n- Create: orchestra/templates/index.html\n- Create: tests/test_web.py\n\n**Acceptance Criteria:** See plan Task 7. /api/workers list; /api/workers/{id} detail+events; /api/workers/{id}/pane calls tmux.capture; /api/workers/{id}/escalations?open=true; POST /answer resolves+sends+marks working; 404/409 paths; SSE stream; / serves HTML; DB from ORCHESTRA_STATE_DB env or .orchestra/state.db.\n\n**Verify:** pytest tests/test_web.py -v\n\n```json:metadata\n{\"files\": [\"orchestra/web.py\", \"orchestra/templates/index.html\", \"tests/test_web.py\"], \"verifyCommand\": \"pytest tests/test_web.py -v\", \"acceptanceCriteria\": [\"/api/workers list\", \"/api/workers/{id} detail+events\", \"/api/workers/{id}/pane via tmux.capture\", \"/api/workers/{id}/escalations\", \"POST /answer resolves+sends+marks working\", \"404 missing, 409 already resolved\", \"SSE stream\", \"/ HTML\", \"DB path from env or default\"]}\n```"
+    },
+    {
+      "id": 12,
+      "subject": "Task 8: End-to-end smoke test",
+      "status": "pending",
+      "blockedBy": [9, 10],
+      "description": "**Goal:** Shell script exercising the whole stack against real claude. Opt-in.\n\n**Files:**\n- Create: scripts/e2e-spawn.sh\n\n**Acceptance Criteria:** See plan Task 8. Preflight claude+orchestra; mktemp+trap cleanup; orchestra init+spawn; poll status until turns=1 (max 120s); exit 0/non-zero.\n\n**Verify:** bash scripts/e2e-spawn.sh (manual)\n\n```json:metadata\n{\"files\": [\"scripts/e2e-spawn.sh\"], \"verifyCommand\": \"bash scripts/e2e-spawn.sh\", \"acceptanceCriteria\": [\"preflight check\", \"fresh tmpdir + init + spawn\", \"poll until turns=1 max 120s\", \"exit codes\", \"cleanup trap\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-16T11:30:00Z"
+}
