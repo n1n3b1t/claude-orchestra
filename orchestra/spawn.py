@@ -35,6 +35,28 @@ def _boot_command(worker_id: str, state_db: Path) -> str:
     )
 
 
+_TRUST_PROMPT_MARKERS = (
+    "trust this folder",
+    "Is this a project you created",
+    "Yes, I trust",
+)
+
+
+def _dismiss_trust_prompt(target: str, conn: sqlite3.Connection, worker_id: str) -> None:
+    """If claude is showing its 'trust this folder?' prompt, accept it.
+
+    The default highlighted option is ``1. Yes, I trust this folder``, so a bare
+    Enter accepts. Without this, _wait_idle spins until the boot deadline because
+    the trust prompt's ``❯ 1. ...`` line doesn't match the idle regex
+    (``❯`` must be at end-of-line).
+    """
+    cap = tmux.capture(target, lines=30)
+    if any(marker in cap for marker in _TRUST_PROMPT_MARKERS):
+        tmux.send_enter(target)
+        state.record_event(conn, "spawn_trust_accepted", worker_id=worker_id)
+        time.sleep(2.0)
+
+
 def _wait_idle(target: str) -> bool:
     deadline = monotonic() + BOOT_TIMEOUT_S
     while monotonic() < deadline:
@@ -84,6 +106,11 @@ def spawn_worker(
     boot_cmd = _boot_command(worker_id, state_db)
     tmux.send_literal(target, boot_cmd)
     tmux.send_enter(target)
+
+    # Step 3b: give claude ~3s to display its trust prompt, dismiss if present.
+    # This unblocks _wait_idle, whose prompt regex can't match the trust menu.
+    time.sleep(3.0)
+    _dismiss_trust_prompt(target, conn, worker_id)
 
     # Step 4: wait for idle
     if not _wait_idle(target):
