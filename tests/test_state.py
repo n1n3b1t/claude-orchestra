@@ -181,6 +181,50 @@ class TestSchemaUpgrade:
         assert "role" in cols
         assert "worktree" in cols
 
+    def test_v0_upgraded_db_supports_role_and_worktree_crud(self, tmp_db: Path) -> None:
+        # Build a v0 DB and upgrade it via init_schema.
+        v0_sql = """
+        CREATE TABLE workers (
+            id TEXT PRIMARY KEY, task TEXT NOT NULL, model TEXT NOT NULL,
+            branch TEXT, pane_target TEXT NOT NULL, status TEXT NOT NULL,
+            progress TEXT, turns INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id TEXT,
+            ts TEXT NOT NULL, kind TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE escalations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id TEXT NOT NULL,
+            ts TEXT NOT NULL, question TEXT NOT NULL, context TEXT,
+            blocking INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0,
+            answer TEXT
+        );
+        """
+        conn = state.connect(tmp_db)
+        conn.executescript(v0_sql)
+        state.init_schema(conn)
+
+        # Insert a worker using the new fields and read it back.
+        w = state.create_worker(
+            conn,
+            id="upgraded-worker",
+            task="post-upgrade task",
+            model="sonnet",
+            branch="orch/upgraded",
+            pane_target="s:up",
+            role="pm",
+            worktree="myworktree",
+        )
+        assert w.role == "pm"
+        assert w.worktree == "myworktree"
+
+        got = state.get_worker(conn, "upgraded-worker")
+        assert got is not None
+        assert got.role == "pm"
+        assert got.worktree == "myworktree"
+
 
 class TestRoleAndWorktree:
     def test_create_with_role_and_worktree(self, tmp_db: Path) -> None:
