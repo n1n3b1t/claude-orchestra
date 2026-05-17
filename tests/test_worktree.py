@@ -1,10 +1,12 @@
 """Tests for orchestra.worktree (git worktree helpers)."""
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 from orchestra import worktree
+from orchestra.settings_merge import HOOK_MARKER
 
 
 def _init_repo(path: Path) -> None:
@@ -45,3 +47,24 @@ class TestAddRemove:
             capture_output=True, text=True, check=True,
         ).stdout
         assert "orch/backend" not in out
+
+    def test_add_installs_hooks_in_worktree(self, tmp_path: Path) -> None:
+        """add() must create .claude/settings.local.json with canonical hooks."""
+        _init_repo(tmp_path)
+        wt = worktree.add(tmp_path, name="backend", worker_id="backend")
+        settings_file = wt / ".claude" / "settings.local.json"
+        assert settings_file.exists(), ".claude/settings.local.json must be created"
+        data = json.loads(settings_file.read_text())
+        hooks = data.get("hooks", {})
+        # At minimum SessionStart and Stop must carry our hook marker.
+        for event in ("SessionStart", "Stop"):
+            assert event in hooks, f"hooks[{event!r}] missing"
+            entries = hooks[event]
+            commands = [
+                h.get("command", "")
+                for entry in entries
+                for h in entry.get("hooks", [])
+            ]
+            assert any(HOOK_MARKER in cmd for cmd in commands), (
+                f"No orchestra hook command found for {event} in {commands}"
+            )

@@ -16,7 +16,14 @@ def add(project_root: Path, *, name: str, worker_id: str) -> Path:
     """Ensure a worktree exists at <root>/worktrees/<name> on branch orch/<worker_id>.
 
     Idempotent: if the directory exists, returns it without reinitialising.
+    Also installs Claude Code hooks into the worktree's own
+    .claude/settings.local.json so that Claude Code launched inside the
+    worktree sub-directory can find them (worktrees have a .git FILE not a
+    .git/ dir, so Claude Code's project-root detection stops at the worktree
+    boundary and finds no hooks unless we install them here).
     """
+    from orchestra import settings_merge  # local import to keep add() cheap
+
     wt_path = project_root / "worktrees" / name
     if wt_path.exists():
         return wt_path
@@ -32,6 +39,8 @@ def add(project_root: Path, *, name: str, worker_id: str) -> Path:
     else:
         args += ["-b", branch, str(wt_path), "HEAD"]
     _git(project_root, *args)
+    # Install hooks so Claude Code finds them when running inside the worktree.
+    settings_merge.ensure_hooks(wt_path / ".claude" / "settings.local.json")
     return wt_path
 
 
