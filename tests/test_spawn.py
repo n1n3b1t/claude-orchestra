@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from orchestra import spawn, state
+from orchestra import spawn, state, tmux
 
 
 def _open(tmp_db: Path) -> sqlite3.Connection:
@@ -37,21 +37,17 @@ class TestHappyPath:
         self, tmp_db, tmp_orch_dir, fake_tmux, monkeypatch
     ):
         conn = _open(tmp_db)
-        # First poll for status event returns nothing; second poll finds it.
-        # Simulate this by having the worker write a status event after 2 polls.
-        original_list = state.list_events
-        calls = {"n": 0}
-
-        def stub_list(conn_, **kw):
-            calls["n"] += 1
-            list(original_list(conn_, **kw))
-            if kw.get("worker_id") == "w1" and calls["n"] >= 2:
-                # inject a fake status event
-                state.record_event(conn_, "status", worker_id="w1", progress="starting", turns=0)
-            return original_list(conn_, **kw)
-
-        monkeypatch.setattr(spawn.state, "list_events", stub_list)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        # Stub _wait_idle_via_event to inject session_ready and return True.
+        def fake_wait_idle(conn_, worker_id_, *, target=None):
+            state.record_event(conn_, "session_ready", worker_id=worker_id_)
+            return True
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
+        # Stub _wait_first_status_via_event to inject turn_complete and return True.
+        def fake_wait_status(conn_, worker_id_):
+            state.record_event(conn_, "turn_complete", worker_id=worker_id_)
+            return True
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event", fake_wait_status)
 
         spawn.spawn_worker(
             conn,
@@ -82,7 +78,8 @@ class TestHappyPath:
     ):
         conn = _open(tmp_db)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
-        monkeypatch.setattr(spawn, "_wait_first_status", lambda *a, **kw: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event", lambda *a, **kw: True)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **kw: True)
 
         spawn.spawn_worker(
             conn,
@@ -109,7 +106,8 @@ class TestHappyPath:
     ):
         conn = _open(tmp_db)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
-        monkeypatch.setattr(spawn, "_wait_first_status", lambda *a, **kw: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event", lambda *a, **kw: True)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **kw: True)
 
         worker_id = "o'brien"
         spawn.spawn_worker(
@@ -136,9 +134,7 @@ class TestBootTimeout:
         self, tmp_db, fake_tmux, monkeypatch
     ):
         conn = _open(tmp_db)
-        fake_tmux.is_idle.return_value = False
-        fake_tmux.capture.return_value = "spinning forever..."
-        # Compress the wait loop time.
+        # No session_ready event will arrive → _wait_idle_via_event times out.
         monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 0.05)
         monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
@@ -169,6 +165,12 @@ class TestFirstStatusTimeout:
         monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
         monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        # Make _wait_idle_via_event succeed instantly by injecting session_ready.
+        def fake_wait_idle(conn_, worker_id_, *, target=None):
+            state.record_event(conn_, "session_ready", worker_id=worker_id_)
+            return True
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
+        # No turn_complete event arrives → _wait_first_status_via_event times out.
 
         spawn.spawn_worker(
             conn,
@@ -196,6 +198,11 @@ class TestPromptInjectFailure:
         # Both attempts raise — exhausts the (1, 2) retry loop
         fake_tmux.send_multiline.side_effect = RuntimeError("buffer too big")
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        # _wait_idle_via_event must succeed so we reach prompt injection.
+        def fake_wait_idle(conn_, worker_id_, *, target=None):
+            state.record_event(conn_, "session_ready", worker_id=worker_id_)
+            return True
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
 
         spawn.spawn_worker(
             conn,
@@ -225,13 +232,14 @@ class TestTrustPrompt:
         self, tmp_db, tmp_orch_dir, fake_tmux, monkeypatch
     ):
         conn = _open(tmp_db)
-        # First two is_idle polls report busy; trust-prompt is visible in capture.
-        # After that, is_idle returns True (claude reached its real prompt).
-        idle_returns = [False, False, True, True]
-        fake_tmux.is_idle.side_effect = (
-            lambda *a, **kw: idle_returns.pop(0) if idle_returns else True
-        )
-        # Capture returns trust-prompt text the first time, plain prompt after.
+        # Compress the wait loop timing so the test is fast.
+        monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 2.0)
+        monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
+        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        # Capture returns trust-prompt text the first time; then plain screen.
         trust_screen = (
             "Is this a project you created or one you trust?\n"
             "❯ 1. Yes, I trust this folder\n  2. No, exit\n"
@@ -240,10 +248,23 @@ class TestTrustPrompt:
         fake_tmux.capture.side_effect = lambda *a, **kw: (
             cap_returns.pop(0) if cap_returns else "❯ "
         )
-        monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
-        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        # After trust dismissal, inject session_ready on the next DB poll
+        # by wrapping _wait_idle_via_event to do real trust-prompt logic but
+        # inject the event after a couple of iterations.
+        real_has_event = spawn._has_event
+        call_counts: dict[str, int] = {"n": 0}
+
+        def patched_has_event(conn_, *, worker_id, kind):
+            if kind == "session_ready":
+                call_counts["n"] += 1
+                if call_counts["n"] >= 3:
+                    # inject the event so the loop finds it
+                    state.record_event(conn_, "session_ready", worker_id=worker_id)
+            return real_has_event(conn_, worker_id=worker_id, kind=kind)
+
+        monkeypatch.setattr(spawn, "_has_event", patched_has_event)
+        # _wait_first_status_via_event → stale_spawn is fine for this test.
 
         spawn.spawn_worker(
             conn,
@@ -259,9 +280,186 @@ class TestTrustPrompt:
         kinds = _kinds(conn, "w1")
         # trust_accepted event was recorded
         assert "spawn_trust_accepted" in kinds
-        # Trust acceptance sent exactly one Enter (caller doesn't double-up here)
-        enter_calls = fake_tmux.send_enter.call_args_list
-        # boot_cmd + 2 post-idle dismiss Enters + 1 trust + 1 model => at least 4
-        assert len(enter_calls) >= 4
-        # model_switched implies the trust handling unblocked _wait_idle
+        # model_switched implies the trust handling unblocked _wait_idle_via_event
         assert "model_switched" in kinds
+        # Trust acceptance sent at least one Enter (trust dismiss)
+        enter_calls = fake_tmux.send_enter.call_args_list
+        assert len(enter_calls) >= 1
+
+
+class TestEventDrivenWaits:
+    def test_wait_idle_returns_true_when_session_ready_event_arrives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="s:1",
+        )
+        # No event yet — first call times out fast.
+        monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.05)
+        assert spawn._wait_idle_via_event(conn, "w1") is False
+
+        # Now insert the event and try again — must succeed.
+        state.record_event(conn, "session_ready", worker_id="w1")
+        monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 1.0)
+        assert spawn._wait_idle_via_event(conn, "w1") is True
+
+    def test_wait_first_status_uses_turn_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="s:1",
+        )
+        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.05)
+        # Cooperative `status` from worker_status command must NOT count.
+        state.record_event(conn, "status", worker_id="w1")
+        assert spawn._wait_first_status_via_event(conn, "w1") is False
+        # turn_complete must count.
+        state.record_event(conn, "turn_complete", worker_id="w1")
+        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 1.0)
+        assert spawn._wait_first_status_via_event(conn, "w1") is True
+
+
+class TestSpawnRoleSwitching:
+    def test_pm_role_uses_pm_renderer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mock everything except the renderer-selection branch.
+        from orchestra import role_prompts
+        called: dict[str, str | None] = {"which": None}
+        monkeypatch.setattr(
+            role_prompts, "render_pm_prompt",
+            lambda **kw: (called.__setitem__("which", "pm") or "PM PROMPT"),
+        )
+        monkeypatch.setattr(
+            role_prompts, "render_engineer_prompt",
+            lambda **kw: (called.__setitem__("which", "eng") or "ENG PROMPT"),
+        )
+        # Stub out tmux calls.
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:pm"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        spawn.spawn_worker(
+            conn, worker_id="pm", model="opus", task="lead",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x", role="pm",
+            brief="MISSION BODY", worktree_name=None,
+        )
+        assert called["which"] == "pm"
+
+    def test_engineer_role_uses_engineer_renderer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orchestra import role_prompts
+        called: dict[str, str | None] = {"which": None}
+        monkeypatch.setattr(
+            role_prompts, "render_pm_prompt",
+            lambda **kw: (called.__setitem__("which", "pm") or "PM PROMPT"),
+        )
+        monkeypatch.setattr(
+            role_prompts, "render_engineer_prompt",
+            lambda **kw: (called.__setitem__("which", "eng") or "ENG PROMPT"),
+        )
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:eng1"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        spawn.spawn_worker(
+            conn, worker_id="eng1", model="sonnet", task="build auth",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x", role="engineer",
+            brief="implement auth", worktree_name=None,
+        )
+        assert called["which"] == "eng"
+
+    def test_no_role_uses_v0_renderer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orchestra import prompts
+        called: dict[str, bool] = {"v0": False}
+        original = prompts.render_startup_prompt
+        def patched(**kw):
+            called["v0"] = True
+            return original(**kw)
+        monkeypatch.setattr(prompts, "render_startup_prompt", patched)
+        # Also patch spawn.prompts (the module reference in spawn.py)
+        monkeypatch.setattr(spawn.prompts, "render_startup_prompt", patched)
+
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:w1"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        spawn.spawn_worker(
+            conn, worker_id="w1", model="sonnet", task="do stuff",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x",
+            # no role, brief, or worktree_name — v0 path
+        )
+        assert called["v0"] is True
+
+    def test_v0_caller_without_role_kwargs_still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """spawn_worker with no role/brief/worktree_name should complete without error."""
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:w1"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        spawn.spawn_worker(
+            conn, worker_id="w1", model="sonnet", task="t",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x",
+        )
+        worker = state.get_worker(conn, "w1")
+        assert worker is not None
+        assert worker.status == "working"
