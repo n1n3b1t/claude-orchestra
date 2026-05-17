@@ -306,3 +306,127 @@ class TestTail:
         result = runner.invoke(app, ["tail", "w1", "-n", "200"])
         assert result.exit_code == 0
         tmux_mock.capture.assert_called_once_with("orch-x:w1", lines=200)
+
+
+class TestSpawnFlags:
+    def test_role_brief_worktree_flags_forwarded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        # Make tmp_path a git repo so worktree creation works.
+        import subprocess
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t"],
+                       check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "t"],
+                       check=True)
+        (tmp_path / "README.md").write_text("x")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "x"],
+                       check=True)
+        (tmp_path / "brief.md").write_text("do backend stuff")
+        called: dict = {}
+        def fake_spawn(conn, **kw):
+            called.update(kw)
+        monkeypatch.setattr(cli.spawn, "spawn_worker", fake_spawn)
+        result = runner.invoke(app, [
+            "spawn", "backend", "sonnet", "implement",
+            "--role", "engineer", "--brief", "brief.md", "--worktree", "backend",
+        ])
+        assert result.exit_code == 0, result.output
+        assert called["role"] == "engineer"
+        assert called["brief"] == "do backend stuff"
+        assert called["worktree_name"] == "backend"
+
+
+class TestSend:
+    def test_send_records_event_and_calls_tmux(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        # Seed a worker row.
+        with cli._open_db() as conn:  # type: ignore[attr-defined]
+            state.create_worker(
+                conn, id="backend", task="t", model="sonnet",
+                branch="orch/backend", pane_target="s:backend",
+                role="engineer",
+            )
+        sent: list = []
+        def fake_send(target, msg, **kw):
+            sent.append((target, msg))
+        monkeypatch.setattr(cli.tmux, "send_multiline", fake_send)
+        result = runner.invoke(app, ["send", "backend", "merge conflict in app.py"])
+        assert result.exit_code == 0, result.output
+        assert sent == [("s:backend", "merge conflict in app.py")]
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+        assert "message_sent" in kinds
+
+
+class TestAnswer:
+    def test_answer_resolves_and_sends(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id="backend", task="t", model="sonnet",
+                branch="orch/backend", pane_target="s:backend",
+                role="engineer",
+            )
+            esc = state.create_escalation(
+                conn, worker_id="backend",
+                question="contract?", context=None, blocking=True,
+            )
+        sent: list = []
+        monkeypatch.setattr(cli.tmux, "send_multiline",
+                            lambda t, m, **k: sent.append((t, m)))
+        result = runner.invoke(app, ["answer", str(esc.id), "use {code:str}"])
+        assert result.exit_code == 0, result.output
+        with cli._open_db() as conn:
+            open_now = state.list_open_escalations(conn)
+        assert open_now == []
+        assert sent and sent[0][0] == "s:backend"
+        assert "use {code:str}" in sent[0][1]
+
+
+class TestPoll:
+    def test_poll_prints_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id="backend", task="t", model="sonnet",
+                branch="orch/backend", pane_target="s:backend",
+                role="engineer", worktree="backend",
+            )
+        result = runner.invoke(app, ["poll", "--timeout", "0.1", "--caller", "pm"])
+        assert result.exit_code == 0, result.output
+        assert "backend" in result.output
+
+
+class TestMergeReap:
+    def test_merge_records_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        # Stub the git call so the test stays hermetic.
+        import subprocess as _sub
+        calls: list = []
+        def fake_run(argv, **kw):  # noqa: ANN001
+            calls.append(argv)
+            return _sub.CompletedProcess(argv, 0, stdout="", stderr="")
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id="backend", task="t", model="sonnet",
+                branch="orch/backend", pane_target="s:backend",
+                role="engineer", worktree="backend",
+            )
+        result = runner.invoke(app, ["merge", "backend"])
+        assert result.exit_code == 0, result.output
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+        assert "merge_attempted" in kinds
+        assert "merge_ok" in kinds

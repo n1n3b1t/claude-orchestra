@@ -89,14 +89,18 @@ def init() -> None:
 def spawn_command(
     worker_id: str = typer.Argument(..., metavar="ID"),
     model: str = typer.Argument(..., metavar="MODEL"),
-    task: str = typer.Argument(..., metavar="TASK"),
+    task: str = typer.Argument("", metavar="TASK"),
     context: list[str] = typer.Option(  # noqa: B008
         [], "--context", help="Context files."
     ),
+    role: str = typer.Option("engineer", "--role"),
+    brief: Path | None = typer.Option(None, "--brief"),  # noqa: B008
+    worktree_name: str | None = typer.Option(None, "--worktree"),  # noqa: B008
 ) -> None:
     """Spawn a worker into a new tmux window."""
     project_root = str(Path.cwd())
     session_name = _session_name_for(Path.cwd())
+    brief_text = brief.read_text() if brief else None
     with _open_db() as conn:
         db = _state_db()
         spawn.spawn_worker(
@@ -108,6 +112,9 @@ def spawn_command(
             state_db=db,
             ctx_files=list(context),
             session_name=session_name,
+            role=role,
+            brief=brief_text,
+            worktree_name=worktree_name,
         )
         typer.echo(f"spawn {worker_id} → {session_name}:{worker_id}")
 
@@ -253,3 +260,106 @@ def worker_hook(event: str = typer.Argument(..., metavar="EVENT")) -> None:
 
     rc = hooks.main([event])
     raise typer.Exit(rc)
+
+
+@app.command("send")
+def send_command(
+    worker_id: str = typer.Argument(..., metavar="ID"),
+    message: str = typer.Argument(..., metavar="MSG"),
+) -> None:
+    """Type MSG into the worker's pane (PM → engineer nudges)."""
+    with _open_db() as conn:
+        w = state.get_worker(conn, worker_id)
+        if w is None:
+            typer.echo(f"no such worker: {worker_id}", err=True)
+            raise typer.Exit(2)
+        tmux.send_multiline(w.pane_target, message)
+        state.record_event(conn, "message_sent", worker_id=worker_id, message=message)
+
+
+@app.command("answer")
+def answer_command(
+    escalation_id: int = typer.Argument(..., metavar="ESC_ID"),
+    answer: str = typer.Argument(..., metavar="ANSWER"),
+) -> None:
+    """Resolve an escalation and send the answer to the asker's pane."""
+    with _open_db() as conn:
+        esc = state.resolve_escalation(conn, escalation_id, answer=answer)
+        w = state.get_worker(conn, esc.worker_id)
+        if w is not None:
+            tmux.send_multiline(w.pane_target, f"[answer to #{esc.id}] {answer}")
+        state.record_event(
+            conn, "escalation_resolved", worker_id=esc.worker_id,
+            escalation_id=esc.id, answer=answer,
+        )
+
+
+def _cursor_file(caller: str) -> Path:
+    return _orch_dir() / f"poll-cursor.{caller}"
+
+
+@app.command("poll")
+def poll_command(
+    timeout: float = typer.Option(30.0, "--timeout"),
+    include_tools: bool = typer.Option(False, "--include-tools"),
+    caller: str = typer.Option("pm", "--caller",
+                                help="Caller id for cursor persistence."),
+) -> None:
+    """Block up to TIMEOUT seconds for new engineer events; print state snapshot."""
+    from orchestra import poll as poll_mod  # local import keeps CLI cheap
+
+    db = _require_initialized()
+    cur_path = _cursor_file(caller)
+    since_id = 0
+    if cur_path.exists():
+        try:
+            since_id = int(cur_path.read_text().strip() or "0")
+        except ValueError:
+            since_id = 0
+    new_cursor, snapshot = poll_mod.poll(
+        db, since_id=since_id, timeout=timeout, include_tools=include_tools,
+    )
+    cur_path.write_text(str(new_cursor))
+    typer.echo(snapshot)
+
+
+@app.command("merge")
+def merge_command(
+    worker_id: str = typer.Argument(..., metavar="ID"),
+) -> None:
+    """git merge orch/<worker_id> from the project root (caller's cwd)."""
+    project_root = Path.cwd()
+    branch = f"orch/{worker_id}"
+    with _open_db() as conn:
+        state.record_event(conn, "merge_attempted", worker_id=worker_id, branch=branch)
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "merge", "--no-edit", branch],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            state.record_event(conn, "merge_ok", worker_id=worker_id,
+                               stdout=proc.stdout[-2000:])
+            typer.echo(f"merged {branch}")
+        else:
+            state.record_event(
+                conn, "merge_conflict", worker_id=worker_id,
+                stdout=proc.stdout[-2000:], stderr=proc.stderr[-2000:],
+            )
+            typer.echo(f"merge conflict on {branch}", err=True)
+            raise typer.Exit(1)
+
+
+@app.command("reap")
+def reap_command(
+    worker_id: str = typer.Argument(..., metavar="ID"),
+) -> None:
+    """Remove the worker's worktree and delete its branch."""
+    from orchestra import worktree as wt_mod
+    with _open_db() as conn:
+        w = state.get_worker(conn, worker_id)
+        if w is None or w.worktree is None:
+            typer.echo(f"worker {worker_id} has no worktree", err=True)
+            raise typer.Exit(2)
+        wt_mod.remove(Path.cwd(), name=w.worktree, worker_id=worker_id)
+        state.record_event(conn, "worktree_reaped", worker_id=worker_id,
+                           name=w.worktree)
