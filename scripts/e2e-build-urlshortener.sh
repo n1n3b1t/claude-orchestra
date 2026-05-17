@@ -30,6 +30,13 @@ for bin in claude orchestra tmux jq python3 sqlite3 bc; do
 done
 
 # --- Cleanup any leftovers from a prior run -----------------------------
+# Tmux session name MUST match orchestra.cli._session_name_for so we kill
+# the right one. The script may otherwise re-attach to a leaked session
+# and `orchestra spawn` will collide on the existing 'pm' window.
+SESSION="orch-$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')"
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+# Also kill the session on script exit so a failed run leaves nothing behind.
+trap 'tmux kill-session -t "$SESSION" 2>/dev/null || true' EXIT
 if [[ -d "$PROJECT_DIR/.git" ]]; then
   ( cd "$PROJECT_DIR" \
     && git worktree list --porcelain 2>/dev/null \
