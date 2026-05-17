@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -15,7 +14,7 @@ class TestSpikeLogging:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db = tmp_path / ".orchestra" / "state.db"
-        db.parent.mkdir(parents=True)
+        db.parent.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
         monkeypatch.setenv("ORCHESTRA_STATE_DB", str(db))
         payload = {"event": "SessionStart", "session_id": "abc"}
@@ -33,7 +32,7 @@ class TestSpikeLogging:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db = tmp_path / ".orchestra" / "state.db"
-        db.parent.mkdir(parents=True)
+        db.parent.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
         monkeypatch.setenv("ORCHESTRA_STATE_DB", str(db))
         rc = hooks.run_spike("Stop", stdin_text="not-json{")

@@ -54,7 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry: reads event name from argv, payload from stdin."""
     argv = argv if argv is not None else sys.argv[1:]
     if not argv:
-        return 0  # Defensive: no event name → silent no-op.
+        # Defensive: a malformed invocation must not break the worker turn —
+        # the hook contract requires exit 0.
+        return 0
     event = argv[0]
     try:
         stdin_text = sys.stdin.read()

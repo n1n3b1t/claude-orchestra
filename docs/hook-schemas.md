@@ -29,6 +29,8 @@ ORCHESTRA_WORKER_ID=spike ORCHESTRA_STATE_DB=$PWD/.orchestra/state.db \
 tail -n 200 .orchestra/hook-debug.log
 ```
 
+> **Note:** The payloads below are placeholders — replace them with real examples after the first live capture run.
+
 ## Captured payloads
 
 (paste one JSON example per event kind here after running the manual capture above)
