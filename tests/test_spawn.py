@@ -130,13 +130,23 @@ class TestHappyPath:
 
 
 class TestBootTimeout:
-    def test_marks_error_and_records_event(
+    def test_soft_timeout_continues_spawn_flow(
         self, tmp_db, fake_tmux, monkeypatch
     ):
+        """Idle-wait timeout is now 'soft': sets stale_spawn and continues.
+
+        The spawn flow must record spawn_stale_idle, set status=stale_spawn,
+        AND still proceed to model switch + prompt injection (model_switched
+        event must be present). Status ends as stale_spawn because
+        _wait_first_status_via_event also times out.
+        """
         conn = _open(tmp_db)
         # No session_ready event will arrive → _wait_idle_via_event times out.
         monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 0.05)
         monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
+        # Also make _wait_first_status_via_event time out immediately.
+        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
 
         spawn.spawn_worker(
@@ -152,9 +162,15 @@ class TestBootTimeout:
 
         worker = state.get_worker(conn, "w1")
         assert worker is not None
-        assert worker.status == "error"
+        assert worker.status == "stale_spawn"
         kinds = _kinds(conn, "w1")
-        assert "spawn_timeout" in kinds
+        # Soft-timeout event recorded (not spawn_timeout):
+        assert "spawn_stale_idle" in kinds
+        assert "spawn_timeout" not in kinds
+        # Spawn flow continued past the timeout — model switch must have fired:
+        assert "model_switched" in kinds
+        # Prompt injection was also attempted:
+        assert "prompt_injected" in kinds
 
 
 class TestFirstStatusTimeout:

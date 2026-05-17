@@ -213,12 +213,13 @@ def spawn_worker(
     if not _wait_idle_via_event(conn, worker_id, target=target):
         last_screen = tmux.capture(target, lines=20)
         state.record_event(
-            conn, "spawn_timeout", worker_id=worker_id, last_screen=last_screen,
+            conn, "spawn_stale_idle", worker_id=worker_id, last_screen=last_screen,
         )
-        state.update_worker(conn, worker_id, status="error")
-        return
-
-    state.record_event(conn, "spawn_idle", worker_id=worker_id)
+        state.update_worker(conn, worker_id, status="stale_spawn")
+        # Continue anyway — Claude may still come up; PM can send a kickoff message
+        # if needed. The first-status wait below still applies.
+    else:
+        state.record_event(conn, "spawn_idle", worker_id=worker_id)
 
     # Step 5: switch model
     tmux.send_literal(target, f"/{model}")
