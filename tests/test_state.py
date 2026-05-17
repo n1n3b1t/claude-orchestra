@@ -149,3 +149,63 @@ def test_events_worker_ts_index_exists(tmp_db: Path) -> None:
     ).fetchall()
     names = {r[0] for r in rows}
     assert "events_worker_ts" in names
+
+
+class TestSchemaUpgrade:
+    def test_v0_db_gets_new_columns_on_init(self, tmp_db: Path) -> None:
+        # Simulate a v0 DB: original schema only.
+        v0_sql = """
+        CREATE TABLE workers (
+            id TEXT PRIMARY KEY, task TEXT NOT NULL, model TEXT NOT NULL,
+            branch TEXT, pane_target TEXT NOT NULL, status TEXT NOT NULL,
+            progress TEXT, turns INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id TEXT,
+            ts TEXT NOT NULL, kind TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE escalations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id TEXT NOT NULL,
+            ts TEXT NOT NULL, question TEXT NOT NULL, context TEXT,
+            blocking INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0,
+            answer TEXT
+        );
+        """
+        conn = state.connect(tmp_db)
+        conn.executescript(v0_sql)
+        # Now run init_schema — should add role/worktree columns.
+        state.init_schema(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(workers)").fetchall()}
+        assert "role" in cols
+        assert "worktree" in cols
+
+
+class TestRoleAndWorktree:
+    def test_create_with_role_and_worktree(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        w = state.create_worker(
+            conn, id="backend", task="api", model="sonnet",
+            branch="orch/backend", pane_target="s:backend",
+            role="engineer", worktree="backend",
+        )
+        assert w.role == "engineer"
+        assert w.worktree == "backend"
+
+    def test_default_role_is_engineer(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        w = state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="s:1",
+        )
+        assert w.role == "engineer"
+        assert w.worktree is None
+
+    def test_pm_role(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        w = state.create_worker(
+            conn, id="pm", task="lead", model="opus",
+            branch=None, pane_target="s:pm", role="pm",
+        )
+        assert w.role == "pm"

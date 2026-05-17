@@ -1,9 +1,24 @@
 """SQLite-backed state for claude-orchestra.
 
 Tables:
-- workers: one row per spawned worker, mutated as the worker progresses
-- events: append-only audit trail; payload is JSON
-- escalations: blocking/non-blocking questions from workers to user
+- workers: one row per spawned worker, mutated as the worker progresses.
+  v1 columns: role ('engineer'|'pm'), worktree (None unless --worktree was set).
+- events: append-only audit trail; payload is JSON.
+- escalations: blocking/non-blocking questions from workers to user / PM.
+
+Event kinds (v0 → v1):
+- v0: spawn_start, spawn_window, spawn_idle, spawn_timeout, spawn_trust_accepted,
+      model_switched, prompt_injected, prompt_inject_retry, prompt_inject_failed,
+      spawn_ok, spawn_first_status_timeout, status, escalation,
+      escalation_resolved, stopped, stop_send_failed, hook_error
+- v1 (hook-driven): session_ready (SessionStart), turn_complete (Stop, payload
+      includes input_tokens/output_tokens/cache_read_tokens/cache_creation_tokens),
+      tool_started (PreToolUse), tool_finished (PostToolUse), session_ended
+      (SessionEnd), notification (Notification)
+- v1 (coordination): message_sent (orchestra send), worktree_created,
+      worktree_reaped, merge_attempted, merge_conflict, merge_ok
+
+Worker status values: spawning, working, done (and any custom values).
 
 Connection settings: WAL journal mode + 5s busy timeout.
 """
@@ -30,6 +45,8 @@ class Worker:
     turns: int
     started_at: str
     updated_at: str
+    role: str = "engineer"
+    worktree: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +98,9 @@ CREATE TABLE IF NOT EXISTS workers (
     progress    TEXT,
     turns       INTEGER NOT NULL DEFAULT 0,
     started_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'engineer',
+    worktree    TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,8 +123,20 @@ CREATE TABLE IF NOT EXISTS escalations (
 """
 
 
+def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # Forward-compat: if a v0 DB pre-dates role/worktree, ALTER TABLE in.
+    cols = _existing_columns(conn, "workers")
+    if "role" not in cols:
+        conn.execute(
+            "ALTER TABLE workers ADD COLUMN role TEXT NOT NULL DEFAULT 'engineer'"
+        )
+    if "worktree" not in cols:
+        conn.execute("ALTER TABLE workers ADD COLUMN worktree TEXT")
 
 
 # ---- Workers ----
@@ -122,6 +153,8 @@ def _row_to_worker(row: sqlite3.Row) -> Worker:
         turns=row["turns"],
         started_at=row["started_at"],
         updated_at=row["updated_at"],
+        role=row["role"],
+        worktree=row["worktree"],
     )
 
 
@@ -134,15 +167,18 @@ def create_worker(
     branch: str | None,
     pane_target: str,
     status: str = "spawning",
+    role: str = "engineer",
+    worktree: str | None = None,
 ) -> Worker:
     ts = now_iso()
     conn.execute(
         """
         INSERT INTO workers (id, task, model, branch, pane_target,
-                             status, progress, turns, started_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)
+                             status, progress, turns, started_at, updated_at,
+                             role, worktree)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?)
         """,
-        (id, task, model, branch, pane_target, status, ts, ts),
+        (id, task, model, branch, pane_target, status, ts, ts, role, worktree),
     )
     got = get_worker(conn, id)
     assert got is not None  # just inserted
