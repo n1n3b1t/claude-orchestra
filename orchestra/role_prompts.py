@@ -61,6 +61,9 @@ You will spawn and coordinate these engineers:
   major phase: briefs-written, engineers-spawned, contract-decided,
   merges-queued, verifier-running, done. This feeds the activity watchdog.
 - If your context grows large, run `/compact` between phases.
+- After the verifier passes, run `orchestra worker done --summary "verified, code=<short>"`
+  and then exit your session by typing `/exit` and pressing Enter. This signals
+  the e2e watchdog that the run succeeded and ends the script.
 
 ### VERIFIER (you must pass this before marking yourself done)
 ```bash
@@ -103,10 +106,9 @@ Workspace: {cwd}  (your own git worktree on branch {branch})
 - Commit to {branch}. Don't push. Don't merge.
 - The PM is at worker id 'pm'. To ask a question, use:
     orchestra worker escalate --blocking --question "..." --context "..."
-- When you finish, leave a final status message:
-    orchestra worker status --progress "DONE: <summary>" --turns <N>
-  Then end your session (let Claude finish naturally — your SessionEnd
-  hook will mark you done in the DB).
+- When you finish, mark yourself done with EXACTLY this command:
+    orchestra worker done --summary "<one-sentence summary of what you built>"
+  Then end your session (Claude Code naturally — your SessionEnd hook will fire).
 
 ### RULES
 - Stay in {cwd}. Do not touch files outside your worktree.

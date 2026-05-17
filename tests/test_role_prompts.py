@@ -16,6 +16,9 @@ PM_REQUIRED_SUBSTRINGS = [
     "/compact",
     "VERIFIER",
     "GO",
+    # Patch 4: PM must know to call worker done + /exit after verifier passes.
+    "orchestra worker done --summary",
+    "/exit",
 ]
 
 ENGINEER_REQUIRED_SUBSTRINGS = [
@@ -27,6 +30,8 @@ ENGINEER_REQUIRED_SUBSTRINGS = [
     "Stay in",  # cwd-only rule
     "Do not spawn workers",
     "Tests live",
+    # Patch 4: engineer must use worker done, not worker status.
+    "orchestra worker done --summary",
 ]
 
 
