@@ -42,26 +42,39 @@ _TRUST_PROMPT_MARKERS = (
 )
 
 
-def _dismiss_trust_prompt(target: str, conn: sqlite3.Connection, worker_id: str) -> None:
-    """If claude is showing its 'trust this folder?' prompt, accept it.
+def _wait_idle(
+    target: str,
+    conn: sqlite3.Connection | None = None,
+    worker_id: str | None = None,
+) -> bool:
+    """Poll until claude is at its main input prompt.
 
-    The default highlighted option is ``1. Yes, I trust this folder``, so a bare
-    Enter accepts. Without this, _wait_idle spins until the boot deadline because
-    the trust prompt's ``❯ 1. ...`` line doesn't match the idle regex
-    (``❯`` must be at end-of-line).
+    Also handles claude's first-boot 'trust this folder?' menu: when seen,
+    send Enter to accept the default-highlighted 'Yes, I trust' option,
+    record a ``spawn_trust_accepted`` event, then keep polling. Without
+    this, ``is_idle``'s prompt regex (``❯`` at end-of-line) never matches
+    the trust menu's ``❯ 1. Yes, I trust this folder`` line, so the loop
+    spins to the deadline.
+
+    The conn/worker_id args are optional so existing callers (and tests
+    that pre-date this signature) keep working with no audit-trail entry.
     """
-    cap = tmux.capture(target, lines=30)
-    if any(marker in cap for marker in _TRUST_PROMPT_MARKERS):
-        tmux.send_enter(target)
-        state.record_event(conn, "spawn_trust_accepted", worker_id=worker_id)
-        time.sleep(2.0)
-
-
-def _wait_idle(target: str) -> bool:
+    trust_handled = False
     deadline = monotonic() + BOOT_TIMEOUT_S
     while monotonic() < deadline:
         if tmux.is_idle(target):
             return True
+        if not trust_handled:
+            cap = tmux.capture(target, lines=30)
+            if any(marker in cap for marker in _TRUST_PROMPT_MARKERS):
+                tmux.send_enter(target)
+                if conn is not None and worker_id is not None:
+                    state.record_event(
+                        conn, "spawn_trust_accepted", worker_id=worker_id,
+                    )
+                trust_handled = True
+                time.sleep(2.0)
+                continue
         time.sleep(BOOT_POLL_S)
     return False
 
@@ -107,13 +120,9 @@ def spawn_worker(
     tmux.send_literal(target, boot_cmd)
     tmux.send_enter(target)
 
-    # Step 3b: give claude ~3s to display its trust prompt, dismiss if present.
-    # This unblocks _wait_idle, whose prompt regex can't match the trust menu.
-    time.sleep(3.0)
-    _dismiss_trust_prompt(target, conn, worker_id)
-
-    # Step 4: wait for idle
-    if not _wait_idle(target):
+    # Step 4: wait for idle. The poll also handles claude's 'trust this folder?'
+    # first-boot menu — see _wait_idle for details.
+    if not _wait_idle(target, conn=conn, worker_id=worker_id):
         last_screen = tmux.capture(target, lines=20)
         state.record_event(
             conn, "spawn_timeout", worker_id=worker_id, last_screen=last_screen,

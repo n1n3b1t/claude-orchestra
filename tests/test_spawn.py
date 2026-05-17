@@ -218,3 +218,50 @@ class TestPromptInjectFailure:
         assert len(retry_events) == 2
         # send_multiline was actually invoked twice
         assert fake_tmux.send_multiline.call_count == 2
+
+
+class TestTrustPrompt:
+    def test_dismisses_trust_prompt_then_reaches_idle(
+        self, tmp_db, tmp_orch_dir, fake_tmux, monkeypatch
+    ):
+        conn = _open(tmp_db)
+        # First two is_idle polls report busy; trust-prompt is visible in capture.
+        # After that, is_idle returns True (claude reached its real prompt).
+        idle_returns = [False, False, True, True]
+        fake_tmux.is_idle.side_effect = (
+            lambda *a, **kw: idle_returns.pop(0) if idle_returns else True
+        )
+        # Capture returns trust-prompt text the first time, plain prompt after.
+        trust_screen = (
+            "Is this a project you created or one you trust?\n"
+            "❯ 1. Yes, I trust this folder\n  2. No, exit\n"
+        )
+        cap_returns = [trust_screen, "❯ ", "❯ "]
+        fake_tmux.capture.side_effect = lambda *a, **kw: (
+            cap_returns.pop(0) if cap_returns else "❯ "
+        )
+        monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
+        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="w1",
+            model="sonnet",
+            task="t",
+            project_root="/tmp/proj",
+            state_db=tmp_db,
+            ctx_files=[],
+            session_name="orch-proj",
+        )
+
+        kinds = _kinds(conn, "w1")
+        # trust_accepted event was recorded
+        assert "spawn_trust_accepted" in kinds
+        # Trust acceptance sent exactly one Enter (caller doesn't double-up here)
+        enter_calls = fake_tmux.send_enter.call_args_list
+        # boot_cmd + 2 post-idle dismiss Enters + 1 trust + 1 model => at least 4
+        assert len(enter_calls) >= 4
+        # model_switched implies the trust handling unblocked _wait_idle
+        assert "model_switched" in kinds
