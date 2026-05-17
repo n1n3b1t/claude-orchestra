@@ -256,9 +256,10 @@ Anything not listed lands in `events` with `kind=internal_error` and the traceba
 
 ## Roadmap after v0
 
-- **v0.1:** multiple concurrent workers, heartbeat with adaptive intervals (30s/120s/300s), `orchestra reconcile` for orphan cleanup.
-- **v0.2:** rate-limit watchdog (steal primeline's retry message verbatim), worktree-per-worker spawn, per-tool permission allowlists via Claude Code hooks (worker hook reads `ORCHESTRA_WORKER_ID` to gate behavior).
-- **v0.3:** structured inter-worker messaging (one worker can ask another a question through the orchestrator).
+- **v1.0 (drafted):** replace screen-scraping state detection with Claude Code hook events. See `2026-05-17-claude-orchestra-v1-design.md`.
+- **v1.1:** multiple concurrent workers, heartbeat with adaptive intervals (30s/120s/300s), `orchestra reconcile` for orphan cleanup.
+- **v1.2:** rate-limit watchdog (steal primeline's retry message verbatim), worktree-per-worker spawn, per-tool permission allowlists via Claude Code hook gating.
+- **v1.3:** structured inter-worker messaging (one worker can ask another a question through the orchestrator).
 
 ## Open questions deferred to implementation
 
