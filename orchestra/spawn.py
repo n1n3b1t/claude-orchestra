@@ -94,6 +94,7 @@ def _wait_idle_via_event(
                 state.record_event(conn, "spawn_trust_accepted", worker_id=worker_id)
                 trust_handled = True
                 time.sleep(2.0)
+                time.sleep(BOOT_POLL_S)
                 continue
         time.sleep(BOOT_POLL_S)
     return False
@@ -126,6 +127,7 @@ def _render_startup_prompt(
     cwd: str,
     branch: str,
 ) -> str:
+    """Select PM / Engineer / v0 prompt renderer based on `role`."""
     if role == "pm":
         return role_prompts.render_pm_prompt(
             mission=brief or task,
@@ -165,17 +167,8 @@ def spawn_worker(
     branch = f"orch/{worker_id}"
     pane_target = f"{session_name}:{worker_id}"
 
-    # Pre-step: worktree (engineers only — PMs work in the main checkout).
-    cwd = project_root
-    if worktree_name is not None:
-        wt = worktree_mod.add(Path(project_root), name=worktree_name, worker_id=worker_id)
-        cwd = str(wt)
-        state.record_event(
-            conn, "worktree_created", worker_id=worker_id,
-            name=worktree_name, path=str(wt),
-        )
-
-    # Step 1: worker row
+    # Step 1: worker row — created before any external operations so that
+    # failures always have an audit trail.
     state.create_worker(
         conn, id=worker_id, task=task, model=model,
         branch=branch, pane_target=pane_target,
@@ -186,6 +179,24 @@ def spawn_worker(
         conn, "spawn_start", worker_id=worker_id, task=task, model=model,
         role=role, worktree=worktree_name,
     )
+
+    # Pre-step: worktree (engineers only — PMs work in the main checkout).
+    cwd = project_root
+    if worktree_name is not None:
+        try:
+            wt = worktree_mod.add(Path(project_root), name=worktree_name, worker_id=worker_id)
+            cwd = str(wt)
+            state.record_event(
+                conn, "worktree_created", worker_id=worker_id,
+                name=worktree_name, path=str(wt),
+            )
+        except Exception as e:  # noqa: BLE001
+            state.record_event(
+                conn, "worktree_failed", worker_id=worker_id,
+                name=worktree_name, error=repr(e),
+            )
+            state.update_worker(conn, worker_id, status="error")
+            return
 
     # Step 2: tmux session + window
     tmux.ensure_session(session_name, cwd=cwd)

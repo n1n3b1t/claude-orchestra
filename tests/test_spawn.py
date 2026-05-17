@@ -329,6 +329,53 @@ class TestEventDrivenWaits:
         assert spawn._wait_first_status_via_event(conn, "w1") is True
 
 
+class TestWorktreeFailure:
+    def test_worktree_add_failure_records_event_and_marks_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """worktree_mod.add raising leaves a worker row + worktree_failed event."""
+        def _raise(*a, **kw):
+            raise RuntimeError("git not initialised")
+
+        monkeypatch.setattr(spawn, "worktree_mod", MagicMock(add=_raise))
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:x"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(spawn.tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="x",
+            model="sonnet",
+            task="t",
+            project_root=str(tmp_path),
+            state_db=db,
+            ctx_files=[],
+            session_name="orch-x",
+            worktree_name="x",
+        )
+
+        worker = state.get_worker(conn, "x")
+        assert worker is not None, "worker row must exist even after worktree failure"
+        assert worker.status == "error"
+
+        kinds = _kinds(conn, "x")
+        assert "worktree_failed" in kinds, f"expected worktree_failed in {kinds}"
+
+        # The error message must appear in the event payload.
+        events = state.list_events(conn, worker_id="x")
+        wf_event = next(e for e in events if e.kind == "worktree_failed")
+        assert "git not initialised" in str(wf_event.payload)
+
+
 class TestSpawnRoleSwitching:
     def test_pm_role_uses_pm_renderer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
