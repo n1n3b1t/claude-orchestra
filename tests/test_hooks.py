@@ -132,7 +132,8 @@ class TestTypedDispatch:
     ) -> None:
         # No worker exists for the env-set id; status update will raise.
         state.connect(tmp_db).close()
-        # ^ ensures DB file exists; schema absent → typed dispatch will error
+        # ^ Creates the DB file but skips init_schema, so any state.update_worker call
+        #   in dispatch hits "no such table: workers" and triggers the hook_error path.
         monkeypatch.setenv("ORCHESTRA_WORKER_ID", "nope")
         monkeypatch.setenv("ORCHESTRA_STATE_DB", str(tmp_db))
         rc = hooks.dispatch("SessionStart", stdin_text="{}")

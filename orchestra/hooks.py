@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from orchestra import state
+
 # --- Helpers ---
 
 def _now() -> str:
@@ -51,7 +53,8 @@ def _append_log(name: str, line: str) -> None:
     if d is None:
         return
     d.mkdir(parents=True, exist_ok=True)
-    (d / name).open("a").write(line.rstrip("\n") + "\n")
+    with (d / name).open("a") as fh:
+        fh.write(line.rstrip("\n") + "\n")
 
 
 # --- Spike fallback (Task 1) ---
@@ -93,8 +96,6 @@ def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:
 
 
 def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
-    from orchestra import state  # local import to keep spike-mode import path fast
-
     if event == "SessionStart":
         state.update_worker(conn, wid, status="working")
         state.record_event(conn, "session_ready", worker_id=wid,
@@ -137,8 +138,6 @@ def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
 
 def dispatch(event: str, *, stdin_text: str) -> int:
     """Typed dispatch — always returns 0."""
-    from orchestra import state  # local import to keep spike-mode import path fast
-
     db = _state_db()
     wid = _worker_id()
     if db is None or wid is None:

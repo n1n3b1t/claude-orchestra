@@ -75,3 +75,14 @@ class TestMerge:
         settings_merge.ensure_hooks(settings)
         got = json.loads(settings.read_text())
         assert "hooks" in got
+
+    def test_null_event_value_handled(self, tmp_path: Path) -> None:
+        settings = tmp_path / ".claude" / "settings.local.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"hooks": {"SessionStart": None}}))
+        settings_merge.ensure_hooks(settings)
+        got = json.loads(settings.read_text())
+        entries = got["hooks"]["SessionStart"]
+        assert isinstance(entries, list)
+        assert any(HOOK_CMD in inner["command"]
+                   for outer in entries for inner in outer["hooks"])
