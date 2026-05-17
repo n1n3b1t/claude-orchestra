@@ -1,52 +1,177 @@
 """Claude Code hook entrypoint for orchestra workers.
 
-This module starts as a log-only spike: every hook invocation appends a
-JSONL line to `.orchestra/hook-debug.log` (next to state.db) so we can
-inspect the actual payload shape Claude Code sends. Typed dispatch is
-added in Task 2 once the schemas are pinned down.
+Maps the six Claude Code hook events to rows in state.db:
 
-Invocation contract (from Claude Code):
-    The configured `command` is run; the event payload arrives on stdin
-    as JSON. The hook MUST exit 0 — a non-zero exit breaks the worker turn.
+    SessionStart -> session_ready    (worker.status=working)
+    Stop         -> turn_complete    (worker.turns += 1; payload carries tokens)
+    PreToolUse   -> tool_started     (event only)
+    PostToolUse  -> tool_finished    (event only)
+    SessionEnd   -> session_ended    (worker.status=done if not already error)
+    Notification -> notification     (event only)
+
+Captured payload shapes are documented in docs/hook-schemas.md.
+
+This module MUST never raise out to the caller: a non-zero exit aborts
+the worker turn. Errors are caught, logged to hook-errors.log, and
+recorded as a `hook_error` event (when the DB is reachable).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+# --- Helpers ---
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _log_path() -> Path | None:
+def _orch_dir() -> Path | None:
     db = os.environ.get("ORCHESTRA_STATE_DB")
-    if not db:
-        return None
-    return Path(db).parent / "hook-debug.log"
+    return Path(db).parent if db else None
 
+
+def _state_db() -> Path | None:
+    db = os.environ.get("ORCHESTRA_STATE_DB")
+    return Path(db) if db else None
+
+
+def _worker_id() -> str | None:
+    return os.environ.get("ORCHESTRA_WORKER_ID")
+
+
+def _append_log(name: str, line: str) -> None:
+    d = _orch_dir()
+    if d is None:
+        return
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).open("a").write(line.rstrip("\n") + "\n")
+
+
+# --- Spike fallback (Task 1) ---
 
 def run_spike(event: str, *, stdin_text: str) -> int:
     """Log-only hook implementation. Returns the exit code (always 0)."""
-    log = _log_path()
-    if log is None:
-        return 0  # No state db env — silently no-op.
-    log.parent.mkdir(parents=True, exist_ok=True)
-    record: dict[str, object] = {
+    record: dict[str, Any] = {
         "ts": _now(),
         "event": event,
-        "worker_id": os.environ.get("ORCHESTRA_WORKER_ID"),
+        "worker_id": _worker_id(),
     }
     try:
         record["payload"] = json.loads(stdin_text) if stdin_text else None
     except json.JSONDecodeError:
         record["parse_error"] = True
         record["raw"] = stdin_text
-    with log.open("a") as fh:
-        fh.write(json.dumps(record) + "\n")
+    _append_log("hook-debug.log", json.dumps(record))
+    return 0
+
+
+# --- Typed dispatch (Task 2) ---
+
+def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:
+    """Pull token counts out of a Stop-hook payload.
+
+    Claude Code's exact field names live in docs/hook-schemas.md; this
+    function tolerates the two known shapes (top-level vs nested under
+    `usage`). Missing fields default to 0 — never raises.
+    """
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        usage = payload if isinstance(payload, dict) else {}
+    return {
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "cache_read_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        "cache_creation_tokens": int(usage.get("cache_creation_input_tokens", 0) or 0),
+    }
+
+
+def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
+    from orchestra import state  # local import to keep spike-mode import path fast
+
+    if event == "SessionStart":
+        state.update_worker(conn, wid, status="working")
+        state.record_event(conn, "session_ready", worker_id=wid,
+                           session_id=payload.get("session_id"))
+        return
+    if event == "Stop":
+        w = state.get_worker(conn, wid)
+        next_turns = (w.turns if w else 0) + 1
+        state.update_worker(conn, wid, turns=next_turns)
+        tokens = _extract_token_usage(payload)
+        state.record_event(conn, "turn_complete", worker_id=wid, **tokens)
+        return
+    if event == "PreToolUse":
+        state.record_event(conn, "tool_started", worker_id=wid,
+                           tool=payload.get("tool_name"),
+                           input_summary=str(payload.get("tool_input", ""))[:200])
+        return
+    if event == "PostToolUse":
+        state.record_event(conn, "tool_finished", worker_id=wid,
+                           tool=payload.get("tool_name"),
+                           output_summary=str(payload.get("tool_output", ""))[:200])
+        return
+    if event == "SessionEnd":
+        w = state.get_worker(conn, wid)
+        # SessionEnd marks done unless the worker already failed.
+        if w is not None and w.status not in ("error", "stopped", "stop_send_failed"):
+            state.update_worker(conn, wid, status="done")
+        state.record_event(conn, "session_ended", worker_id=wid,
+                           reason=payload.get("reason"))
+        return
+    if event == "Notification":
+        state.record_event(conn, "notification", worker_id=wid,
+                           message=payload.get("message"))
+        return
+    # Unknown event: log to debug log but don't error.
+    _append_log("hook-debug.log",
+                json.dumps({"ts": _now(), "event": event,
+                            "worker_id": wid, "unknown": True, "payload": payload}))
+
+
+def dispatch(event: str, *, stdin_text: str) -> int:
+    """Typed dispatch — always returns 0."""
+    from orchestra import state  # local import to keep spike-mode import path fast
+
+    db = _state_db()
+    wid = _worker_id()
+    if db is None or wid is None:
+        # Hook fired outside an orchestra worker context: no-op.
+        return 0
+    try:
+        payload = json.loads(stdin_text) if stdin_text else {}
+        if not isinstance(payload, dict):
+            payload = {"_raw": payload}
+    except json.JSONDecodeError:
+        payload = {"_parse_error": True, "_raw": stdin_text}
+
+    conn = None
+    try:
+        conn = state.connect(db)
+        _handle(event, payload, conn, wid)
+    except Exception:  # noqa: BLE001 — never break the turn
+        tb = traceback.format_exc()
+        _append_log("hook-errors.log",
+                    json.dumps({"ts": _now(), "event": event,
+                                "worker_id": wid, "traceback": tb}))
+        # Best-effort: record a hook_error event too if DB is reachable.
+        try:
+            if conn is None:
+                conn = state.connect(db)
+            state.record_event(conn, "hook_error", worker_id=wid,
+                               event=event, traceback=tb[-2000:])
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
     return 0
 
 
@@ -62,4 +187,4 @@ def main(argv: list[str] | None = None) -> int:
         stdin_text = sys.stdin.read()
     except Exception:  # noqa: BLE001 — any read error must not break the turn
         stdin_text = ""
-    return run_spike(event, stdin_text=stdin_text)
+    return dispatch(event, stdin_text=stdin_text)

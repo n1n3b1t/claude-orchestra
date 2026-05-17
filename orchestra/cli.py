@@ -68,7 +68,8 @@ def _open_db() -> Generator[sqlite3.Connection, None, None]:
 
 @app.command()
 def init() -> None:
-    """Initialize .orchestra/ in the current directory."""
+    """Initialize .orchestra/ in the current directory and install hooks."""
+    cwd = Path.cwd()
     d = _orch_dir()
     d.mkdir(exist_ok=True)
     db = d / "state.db"
@@ -78,6 +79,9 @@ def init() -> None:
     cfg = d / "config.toml"
     if not cfg.exists():
         cfg.write_text(DEFAULT_CONFIG)
+    # Install Claude Code hooks (idempotent).
+    from orchestra import settings_merge  # local import to keep init cheap
+    settings_merge.ensure_hooks(cwd / ".claude" / "settings.local.json")
     typer.echo(f"initialized {d}")
 
 

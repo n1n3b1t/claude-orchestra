@@ -32,6 +32,15 @@ class TestInit:
         assert runner.invoke(app, ["init"]).exit_code == 0
         assert runner.invoke(app, ["init"]).exit_code == 0
 
+    def test_installs_hooks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        settings = tmp_path / ".claude" / "settings.local.json"
+        assert settings.exists()
+        got = __import__("json").loads(settings.read_text())
+        assert "SessionStart" in got["hooks"]
+
 
 class TestSessionNameFor:
     """The session-name sanitiser keeps tmux's `session.window` target syntax safe."""
