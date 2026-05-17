@@ -83,6 +83,9 @@ def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:
     Claude Code's exact field names live in docs/hook-schemas.md; this
     function tolerates the two known shapes (top-level vs nested under
     `usage`). Missing fields default to 0 — never raises.
+
+    NOTE: Field names verified by inspecting hook-debug.log; update if Stop
+    payload schema differs from {'usage': {...}}.
     """
     usage = payload.get("usage") if isinstance(payload, dict) else None
     if not isinstance(usage, dict):
@@ -154,6 +157,12 @@ def dispatch(event: str, *, stdin_text: str) -> int:
     try:
         conn = state.connect(db)
         _handle(event, payload, conn, wid)
+        # Temporary diagnostic: append raw payload so we can verify the Stop-hook
+        # payload schema from real runs. Remove once _extract_token_usage is confirmed.
+        _append_log(
+            "hook-debug.log",
+            json.dumps({"ts": _now(), "event": event, "worker_id": wid, "payload": payload}),
+        )
     except Exception:  # noqa: BLE001 — never break the turn
         tb = traceback.format_exc()
         _append_log("hook-errors.log",
