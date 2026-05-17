@@ -240,3 +240,12 @@ def worker_escalate(
         )
     finally:
         conn.close()
+
+
+@worker_app.command("hook")
+def worker_hook(event: str = typer.Argument(..., metavar="EVENT")) -> None:
+    """Hook entrypoint invoked by Claude Code; reads payload JSON on stdin."""
+    from orchestra import hooks  # local import to keep CLI import cheap
+
+    rc = hooks.main([event])
+    raise typer.Exit(rc)
