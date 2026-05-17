@@ -12,6 +12,7 @@ Caller persistence:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -75,7 +76,6 @@ def _last_status_for(conn: sqlite3.Connection, worker_id: str) -> str | None:
     ).fetchone()
     if row is None:
         return None
-    import json
     try:
         return json.loads(row[0]).get("progress")
     except Exception:  # noqa: BLE001

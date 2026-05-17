@@ -27,7 +27,7 @@ def add(project_root: Path, *, name: str, worker_id: str) -> Path:
         capture_output=True, text=True, check=True,
     ).stdout
     args = ["worktree", "add"]
-    if branch in existing:
+    if existing.strip():
         args += [str(wt_path), branch]
     else:
         args += ["-b", branch, str(wt_path), "HEAD"]
