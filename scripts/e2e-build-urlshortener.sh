@@ -25,7 +25,7 @@ PROJECT_DIR="${PROJECT_DIR:-/tmp/orch-urlshortener}"
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-for bin in claude orchestra tmux jq python3; do
+for bin in claude orchestra tmux jq python3 sqlite3 bc; do
   command -v "$bin" >/dev/null 2>&1 || { echo "FAIL: $bin not in PATH" >&2; exit 2; }
 done
 

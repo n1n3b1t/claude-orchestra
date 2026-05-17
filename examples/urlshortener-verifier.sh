@@ -18,7 +18,7 @@ CODE=$(curl -fs -X POST "localhost:$PORT/shorten" \
     echo "VERIFIER: POST /shorten failed"; exit 2; }
 test -n "$CODE" || { echo "VERIFIER: empty code"; exit 2; }
 
-curl -fsI "localhost:$PORT/$CODE" | grep -q '^location: https://example.com' \
+curl -fsI "localhost:$PORT/$CODE" | grep -qi '^location: https://example.com' \
   || { echo "VERIFIER: GET /<code> did not 302 to example.com"; exit 3; }
 
 curl -fs "localhost:$PORT/" | grep -q '<form' \
