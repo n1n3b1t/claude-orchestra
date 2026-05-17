@@ -4,10 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from orchestra import settings_merge
-
 
 HOOK_CMD = "orchestra worker hook"
 
