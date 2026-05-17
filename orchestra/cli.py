@@ -253,6 +253,20 @@ def worker_escalate(
         conn.close()
 
 
+@worker_app.command("done")
+def worker_done(
+    summary: str = typer.Option("done", "--summary"),
+) -> None:
+    """Mark this worker as done (cooperative) and record a worker_done event."""
+    wid, db = _worker_env()
+    conn = state.connect(db)
+    try:
+        state.update_worker(conn, wid, status="done", progress=summary)
+        state.record_event(conn, "worker_done", worker_id=wid, summary=summary)
+    finally:
+        conn.close()
+
+
 @worker_app.command("hook")
 def worker_hook(event: str = typer.Argument(..., metavar="EVENT")) -> None:
     """Hook entrypoint invoked by Claude Code; reads payload JSON on stdin."""

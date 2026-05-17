@@ -200,6 +200,33 @@ class TestWorkerCommands:
         assert opens[0].blocking is False
 
 
+class TestWorkerDone:
+    def test_writes_status_done_and_worker_done_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        db = tmp_path / ".orchestra" / "state.db"
+        conn = state.connect(db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch=None, pane_target="orch-x:w1",
+        )
+        state.update_worker(conn, "w1", status="working")
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(db))
+        result = runner.invoke(
+            app,
+            ["worker", "done", "--summary", "verified, code=Aah5jM"],
+        )
+        assert result.exit_code == 0, result.output
+        w = state.get_worker(conn, "w1")
+        assert w is not None
+        assert w.status == "done"
+        assert w.progress == "verified, code=Aah5jM"
+        kinds = [e.kind for e in state.list_events(conn, worker_id="w1")]
+        assert "worker_done" in kinds
+
+
 class TestStop:
     def test_sends_ctrl_c_twice_and_records(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
