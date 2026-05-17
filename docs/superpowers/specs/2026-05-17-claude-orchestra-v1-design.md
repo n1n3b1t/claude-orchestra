@@ -1,208 +1,475 @@
-# claude-orchestra v1 — hook-based state detection
+# claude-orchestra v1 — multi-agent orchestration with hook-based detection
 
 **Status:** draft
 **Date:** 2026-05-17
-**Supersedes parts of:** `2026-05-16-claude-orchestra-design.md` (the polling-based state detection layer)
-**Headline change:** stop screen-scraping; subscribe to Claude Code's native hook events instead.
+**Supersedes parts of:** `2026-05-16-claude-orchestra-design.md` (v0 detection + spawn layers)
+**Headline goal:** stand up a PM + two specialised engineers, have them collaboratively build a small web app end-to-end, with no human intervention beyond kicking it off.
 
-## Background
+## North star — the v1 acceptance test
 
-v0 detects worker state by polling `tmux capture-pane` output and regex-matching for prompt characters and spinner words. It works but is:
+`scripts/e2e-build-urlshortener.sh`:
 
-- **Probabilistic.** Idle is detected up to `BOOT_POLL_S` seconds after it actually happens.
-- **Brittle.** Any change to Claude Code's UI (different spinner text, different prompt glyph, a new welcome screen) breaks `is_idle`. We already hit this with the trust-folder prompt.
-- **Coupled to terminal rendering.** When claude refreshes a screen, our capture sees stale state for one tick.
-- **Workers do double bookkeeping.** Workers are instructed to call `orchestra worker status --progress ... --turns N` periodically. If the model forgets, the dashboard goes stale.
+1. Initialises a fresh project directory.
+2. Runs `orchestra spawn pm opus "..."` with a PM brief that names two engineers.
+3. The PM spawns `backend` (Sonnet) and `frontend` (Sonnet) into their own worktrees.
+4. Engineers build their parts. PM polls, mediates the API contract, answers escalations.
+5. PM merges both worktrees into `main`.
+6. PM runs the verifier: `pytest && uvicorn app:app &` then `curl -X POST localhost:8000/shorten -d '{"url":"https://example.com"}'` (expects 200 + a code), then `curl -I localhost:8000/<code>` (expects 302).
+7. PM marks itself `done` once the verifier passes.
 
-Claude Code exposes a [hook system](https://docs.claude.com/en/docs/claude-code/hooks) that fires shell commands on real lifecycle events. Those events are the authoritative source of truth for "what is claude doing." We should use them.
+The shell script exits 0 if the PM reaches `done` within a wall-clock budget (target: 45 min, ceiling: 90 min).
 
-## Goals
+If we can make this work reliably, v1 is shipped.
 
-- Replace `_wait_idle`'s polling with subscription to a `SessionStart` hook event.
-- Replace `_wait_first_status`'s polling with subscription to the first `Stop` hook event.
-- Auto-record every turn via the `Stop` hook — workers no longer need to call `orchestra worker status` manually.
-- Surface tool-call activity (`PreToolUse` / `PostToolUse`) to the dashboard so the user sees "currently running Bash..." in real time.
-- Make state detection event-driven, not poll-driven. Latency goes from "up to N seconds" to "within tens of milliseconds."
+## Why this is the goal
 
-## Non-goals for v1
+v0 proved that the orchestration substrate (tmux + SQLite + dashboard) works. It proved nothing about *orchestrating useful work*. The hook system, multi-worker spawn, worktrees, and role-based prompts are interesting but only justify their complexity if they cooperate to actually build software. The acceptance test is the contract.
 
-- Multi-worker concurrency (separate v1.1 spec).
-- Adaptive heartbeat (separate v1.1 spec).
-- Rate-limit watchdog (v1.2).
-- Worktree-per-worker (v1.2).
+## Scope
 
-The point of v1 is the detection layer. Holding the rest of the roadmap stable lets us land hooks without churn elsewhere.
+In:
 
-## Architecture changes
+- Hook-based state detection (Claude Code hook events into `state.db`).
+- Multi-worker spawn (PM spawns engineers; engineers don't spawn each other).
+- Worktree-per-worker git isolation.
+- Role-based startup prompts (PM, Engineer).
+- Inter-worker coordination via the existing escalation channel + a new "PM brief" message channel.
+- Adaptive heartbeat for the PM (it sleeps between polls, wakes on engineer events).
+- URL shortener as the canonical e2e target.
 
-### 1. Per-worker `.claude/settings.local.json`
+Out (still v2+):
 
-`orchestra spawn` writes (or merges into) `<project_root>/.claude/settings.local.json` with hooks that invoke a new subcommand:
+- Rate-limit watchdog. Single workers are unlikely to hit limits in the e2e window; if they do, we surface and stop. The watchdog is a v2 hardening pass.
+- Per-tool permission allowlists. v1 keeps `--dangerously-skip-permissions`.
+- More than 3 workers concurrently. The e2e is the budget ceiling, not a generic N-worker design.
+- Multi-host or multi-user.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Project dir (the URL shortener repo we're building)                    │
+│  /tmp/orch-urlshortener/                                                │
+│  ├── .git/    main branch (final merged result)                         │
+│  ├── .claude/settings.local.json   (hooks pointing at `orchestra worker │
+│  │                                  hook ...` — same for every worker)  │
+│  ├── .orchestra/                                                        │
+│  │   ├── state.db                                                       │
+│  │   ├── config.toml                                                    │
+│  │   └── briefs/                ← PM-authored task briefs               │
+│  │       ├── backend.md                                                 │
+│  │       └── frontend.md                                                │
+│  └── worktrees/                                                         │
+│      ├── backend/   (git worktree, branch orch/backend)                 │
+│      └── frontend/  (git worktree, branch orch/frontend)                │
+│                                                                         │
+│  tmux session 'orch-orch-urlshortener':                                 │
+│    window 0  shell (the human watches here)                             │
+│    window 1  pm        (Claude Code, Opus)                              │
+│    window 2  backend   (Claude Code, Sonnet, cwd=worktrees/backend)     │
+│    window 3  frontend  (Claude Code, Sonnet, cwd=worktrees/frontend)    │
+│                                                                         │
+│  Hooks (claude → orchestra):                                            │
+│    SessionStart, Stop, Pre/PostToolUse, SessionEnd, Notification        │
+│    → `orchestra worker hook <event>` → state.db                         │
+│                                                                         │
+│  Coordination (PM → engineers, engineers → PM):                         │
+│    PM writes briefs/<engineer>.md and runs                              │
+│       `orchestra send <engineer> "go read your brief"`                  │
+│    Engineers escalate via                                               │
+│       `orchestra worker escalate --question ...` (writes to state.db,   │
+│       PM sees it on next poll and answers via                           │
+│       `orchestra answer <esc-id> "..."`)                                │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why a star with PM at the center
+
+Three reasons:
+
+1. **Bounded API surface.** Engineers need exactly one peer — the PM. They don't have to know about each other's existence, lifecycle, or branch names.
+2. **Single coordinator for the API contract.** The whole reason this isn't a single-engineer task is to test that the PM can mediate between two engineers' assumptions ("backend returns `{code}`, frontend posts `{url}`"). A mesh would let the engineers negotiate directly, which is interesting but a different design.
+3. **PM owns merge.** Engineers commit to their own branch. Only the PM checks out main and merges. Fewer concurrent writers to main = fewer race possibilities.
+
+## Hook-based state detection
+
+Same plan as the previous v1 draft, kept here for completeness.
+
+### settings.local.json injection
+
+`orchestra init` writes (or deep-merges into) `<project_root>/.claude/settings.local.json`:
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{
-      "hooks": [{"type": "command", "command": "orchestra worker hook SessionStart"}]
-    }],
-    "Stop": [{
-      "hooks": [{"type": "command", "command": "orchestra worker hook Stop"}]
-    }],
-    "PreToolUse": [{
-      "matcher": ".*",
-      "hooks": [{"type": "command", "command": "orchestra worker hook PreToolUse"}]
-    }],
-    "PostToolUse": [{
-      "matcher": ".*",
-      "hooks": [{"type": "command", "command": "orchestra worker hook PostToolUse"}]
-    }],
-    "SessionEnd": [{
-      "hooks": [{"type": "command", "command": "orchestra worker hook SessionEnd"}]
-    }],
-    "Notification": [{
-      "hooks": [{"type": "command", "command": "orchestra worker hook Notification"}]
-    }]
+    "SessionStart":  [{"hooks": [{"type": "command", "command": "orchestra worker hook SessionStart"}]}],
+    "Stop":          [{"hooks": [{"type": "command", "command": "orchestra worker hook Stop"}]}],
+    "PreToolUse":    [{"matcher": ".*", "hooks": [{"type": "command", "command": "orchestra worker hook PreToolUse"}]}],
+    "PostToolUse":   [{"matcher": ".*", "hooks": [{"type": "command", "command": "orchestra worker hook PostToolUse"}]}],
+    "SessionEnd":    [{"hooks": [{"type": "command", "command": "orchestra worker hook SessionEnd"}]}],
+    "Notification":  [{"hooks": [{"type": "command", "command": "orchestra worker hook Notification"}]}]
   }
 }
 ```
 
-If `settings.local.json` already exists, we deep-merge our `hooks` block into the existing object. We do NOT touch any other top-level key.
+If the file already exists, we deep-merge our hooks into the existing array per event (don't replace user hooks).
 
-### 2. New CLI subcommand: `orchestra worker hook <event_name>`
+### `orchestra worker hook <event>`
 
-Reads JSON from stdin (Claude Code's standard hook protocol), writes a row to `state.db`, and exits 0. The shape per event:
+Reads JSON from stdin (Claude Code's hook protocol), writes to state.db, exits 0 even on internal errors (a failing hook breaks the worker turn). Mapping:
 
-| Event | Recorded `kind` | Side effect on worker row |
+| Event | DB event kind | Worker row mutation |
 |---|---|---|
-| `SessionStart` | `session_ready` | `status = working` |
-| `Stop` | `status` | `turns += 1`; payload stores any usage info |
-| `PreToolUse` | `tool_started` | none (informational; payload has tool name + input summary) |
-| `PostToolUse` | `tool_finished` | none |
-| `SessionEnd` | `session_ended` | `status = done` if no error; preserve status if user already stopped |
-| `Notification` | `notification` | none in v1 (future: surface to dashboard alerts) |
+| SessionStart | `session_ready` | `status=working` |
+| Stop | `status` | `turns += 1` |
+| PreToolUse | `tool_started` | none (payload: tool name + input summary) |
+| PostToolUse | `tool_finished` | none |
+| SessionEnd | `session_ended` | `status=done` if no prior error/stop |
+| Notification | `notification` | none |
 
-The subcommand requires `ORCHESTRA_WORKER_ID` and `ORCHESTRA_STATE_DB` env, same as `worker status`. Without them, exit 2 — same convention.
+### Spawn loses two polling loops
 
-### 3. Simplified spawn flow
+- `_wait_idle` becomes "block until a `session_ready` event for this worker_id appears in state.db, max 60s".
+- `_wait_first_status` becomes "block until first `Stop` event for this worker_id, max 90s".
+- The capture-pane trust-prompt dismissal stays (fires before SessionStart).
 
-Old:
+Detection latency drops from "up to N seconds (poll interval)" to "within hook subprocess RTT" (~100ms).
+
+## Multi-worker support
+
+### Workers run concurrently; PM is the lifecycle owner
+
+Engineers never spawn other engineers. Only the PM can call `orchestra spawn`. Within the PM's tmux pane, the PM runs:
+
 ```
-boot → poll is_idle → double-Enter → /<model> → paste prompt → poll for first status
+orchestra spawn backend  sonnet  --brief .orchestra/briefs/backend.md  --worktree backend
+orchestra spawn frontend sonnet  --brief .orchestra/briefs/frontend.md --worktree frontend
 ```
 
-New:
+New spawn options for v1:
+
+- `--brief PATH` — path (relative to project root) of a markdown brief. The startup prompt for the engineer includes "your brief is at `<path>`; read it before doing anything." This decouples the brief content from the CLI arg string.
+- `--worktree NAME` — create or reuse a git worktree at `<project>/worktrees/<name>` on branch `orch/<worker_id>`, and pass it as `--cwd` to the spawned `claude` process. Without this flag, spawn behaves as v0 did (shared cwd, no worktree).
+
+### Worktree management
+
+`orchestra spawn ... --worktree backend` does:
+
+1. If `worktrees/backend/` doesn't exist:
+   - `git worktree add -b orch/backend worktrees/backend HEAD`
+2. Otherwise reuse it.
+3. Spawn claude with `cwd=worktrees/backend`.
+
+`orchestra reap <worker_id>` (new): removes the worktree + deletes the branch. PM calls this after merging.
+
+The PM has a corresponding merge helper:
+
 ```
-boot → wait for session_ready event (DB) → /<model> → paste prompt → wait for first Stop event (DB)
+orchestra merge <worker_id>     # PM runs from project root (main checkout)
 ```
 
-`_wait_idle` and `_wait_first_status` both become "block on a specific event kind appearing in state.db." Same polling primitive, but the condition is precise: an event of the named kind exists for this worker_id with `id > some_baseline`.
+Internally: `git fetch worktrees/<worker_id>` is unnecessary (same repo); the PM does `git merge orch/<worker_id>` and reports conflicts back to the engineer via the escalation channel if it fails.
 
-The trust-prompt special-case stays for now — it fires before `SessionStart` (claude hasn't even started its session yet), so hooks don't help us there. We keep the existing capture-pane based dismissal.
+### Heartbeat-style PM tick
 
-### 4. Worker prompt simplification
+v0 had no heartbeat — workers ran independently and the dashboard polled. v1 adds a PM-side heartbeat: while waiting for engineers to finish, the PM runs a loop:
 
-`orchestra/prompts.py`'s startup template currently tells the worker to call `orchestra worker status --progress "..." --turns N` periodically. In v1 we drop that directive — Stop hooks do it automatically. We keep:
-- The escalation instruction (`orchestra worker escalate`) — still manual.
-- The "commit yes, push no" and other coordination rules.
+1. `orchestra poll` — block up to 30s on a new event for any tracked worker, or return immediately if one has fired since last poll. Returns a structured summary (workers that completed turns, new escalations, sessions that ended).
+2. Decide what to do (answer an escalation, send a follow-up message, merge a completed branch, declare done).
+3. Repeat.
 
-The `worker status` CLI stays available for callers who want to override `progress`-strings explicitly. The auto-recorded Stop event uses a default progress string (e.g. `"turn complete"`).
+This replaces the v0.1-roadmap heartbeat process. The PM-as-coordinator owns its own loop; there's no separate daemon.
 
-### 5. is_idle becomes a debug helper
+## Role-based prompts
 
-After v1, no production code path calls `tmux.is_idle`. It stays in the module as a diagnostic (and the `orchestra tail` command could grow an `--idle` flag) but doesn't gate spawn or status. We can simplify or remove the spinner / prompt regexes if nothing else needs them.
+`orchestra spawn` learns a `--role <pm|engineer>` flag (default: `engineer`, matches v0 behavior). `orchestra/prompts.py` gains role-specific templates.
 
-### 6. Capture-pane stays
+### PM prompt skeleton
 
-The dashboard's live pane peek (`GET /api/workers/{id}/pane`) still uses `tmux capture-pane`. Hooks tell us *what* claude is doing, but the rendered terminal view is still useful for humans, especially for debugging escalations.
+```
+## ROLE: Project Manager
+Project: {project_name}
+Worker ID: {worker_id}
+
+### MISSION
+{mission}
+
+### YOUR TEAM
+You will spawn and coordinate these engineers:
+{engineer_briefs}
+
+### TOOLS YOU CAN USE
+- orchestra spawn <id> <model> --brief <path> --worktree <name>
+- orchestra send <worker_id> "<message>"
+- orchestra poll                            # wait for engineer events
+- orchestra answer <escalation_id> "<answer>"
+- orchestra merge <worker_id>               # after engineer reports done
+- orchestra reap <worker_id>                # cleanup
+- All normal tools (Read, Write, Bash, Edit) for your own files
+
+### RULES
+- Write per-engineer briefs to .orchestra/briefs/<id>.md before spawning.
+- Each engineer is responsible for their own worktree only. Don't touch their files.
+- Mediate the API contract: when the engineers' assumptions diverge, decide
+  and propagate the decision to both.
+- Verify the final result with the verifier script before marking done.
+
+### VERIFIER (you must pass this before marking yourself done)
+{verifier_command_block}
+
+### GO
+Read the mission, plan the engineer split, write briefs, spawn engineers,
+coordinate, merge, verify.
+```
+
+### Engineer prompt skeleton
+
+```
+## ROLE: Engineer
+Worker ID: {worker_id}
+Workspace: {cwd}  (your own git worktree on branch {branch})
+
+### YOUR BRIEF
+{brief_content_inlined_OR_path_to_read}
+
+### COORDINATION
+- Commit to {branch}. Don't push. Don't merge.
+- The PM is at worker id 'pm'. To ask a question, use:
+    orchestra worker escalate --question "..." --context "..."
+- When you finish, leave a final status message:
+    orchestra worker status --progress "DONE: <summary>" --turns <N>
+  Then end your session (let Claude finish naturally — your SessionEnd
+  hook will mark you done in the DB).
+
+### RULES
+- Stay in {cwd}. Do not touch files outside your worktree.
+- Do not spawn workers.
+- Tests live in your worktree. Run them before declaring DONE.
+```
+
+## Coordination protocol
+
+### Channels
+
+Three message channels, all backed by state.db / filesystem:
+
+1. **Brief channel** (`.orchestra/briefs/<engineer>.md`) — PM writes once at spawn, engineer reads once at startup.
+2. **Escalation channel** — engineer writes via `orchestra worker escalate`, row in `escalations` table, PM reads via `orchestra poll` and responds via `orchestra answer`.
+3. **Send channel** (new) — `orchestra send <worker_id> "message"` types into the engineer's tmux pane via `send_multiline`. Used for nudges, clarifications, "merge conflict, please rebase X." Recorded as a `message_sent` event.
+
+### Typical flow
+
+```
+PM:        write briefs, spawn engineers
+PM:        orchestra poll  →  waits up to 30s for an event
+backend:   (working) ... SessionStart ... Stop (turn 1) ...
+PM:        sees turn 1 done. backend not yet escalated; keep polling.
+PM:        orchestra poll
+frontend:  Stop (turn 3); escalation: "what's the response shape of /shorten?"
+PM:        sees escalation. Decides API contract. Answers:
+              orchestra answer 1 "Response is {\"code\":\"abc123\"}; status 200."
+              orchestra send backend "Frontend expects POST /shorten → {\"code\":\"...\"}"
+PM:        orchestra poll
+backend:   Stop (turn 5); escalation: "tests pass; DONE"
+frontend:  Stop (turn 7); "DONE"
+PM:        orchestra merge backend; orchestra merge frontend
+PM:        runs verifier; exits 0
+PM:        orchestra worker status --progress "DONE: verified" --turns N
+            (SessionEnd hook fires → status=done)
+```
+
+### Failure modes
+
+- Merge conflict → PM sends the engineer back with `orchestra send <id> "merge conflict in app.py lines X-Y; please rebase against main and update"`. Engineer rebases, commits, signals done again.
+- Engineer stuck (long silence) → PM sends a poke via `orchestra send`. If still no movement after K minutes, PM escalates by stopping the worker and re-spawning with a clarified brief.
+- Verifier fails → PM dispatches a fix back to whichever engineer's domain owns the failure.
 
 ## State schema additions
 
-No schema migration. `events.kind` is already a free-form text column. New kinds in v1:
-- `session_ready`
-- `tool_started`, `tool_finished`
-- `session_ended`
-- `notification`
-- existing `status` kind keeps its meaning, just gets auto-recorded on Stop
+No migration — `events.kind` is free-form text. New kinds and statuses:
 
-`workers.status` enum gets one new value:
-- `done` — set by `SessionEnd` when no prior error / manual stop.
+**Event kinds:**
+- `session_ready` (SessionStart hook)
+- `tool_started`, `tool_finished` (Pre/PostToolUse)
+- `session_ended` (SessionEnd)
+- `notification` (Notification)
+- `message_sent` (PM-to-engineer message via `orchestra send`)
+- `worktree_created`, `worktree_reaped`
+- `merge_attempted`, `merge_conflict`, `merge_ok`
 
-## Data flow walkthrough
+**Worker statuses:** add `done`.
 
-**Spawn timeline (v1):**
+**Workers row:** add `role TEXT NOT NULL DEFAULT 'engineer'` and `worktree TEXT` (nullable; only set when spawn was called with `--worktree`).
 
-```
-0.0s   orchestra spawn w1 sonnet "task"
-0.0s   state.create_worker(status=spawning)
-0.0s   merge .claude/settings.local.json
-0.0s   tmux new-window
-0.1s   send "claude --dangerously-skip-permissions" + Enter
-3-8s   claude starts, prints trust prompt (if first run in project)
-4-9s   our trust-prompt regex catches it, sends Enter
-6-12s  claude finishes startup, SessionStart hook fires
-6-12s  hook runs `orchestra worker hook SessionStart`, writes session_ready event
-6-12s  spawn observes session_ready in DB → done waiting; status = working
-6-12s  send /<model>; sleep brief; paste-buffer task prompt
-15-30s claude does the task; Stop hook fires when first response completes
-15-30s hook writes status event, turns = 1
-15-30s spawn observes first Stop event → spawn_ok; returns
-```
+## New CLI surface for v1
 
-Latency from "claude is actually idle" to "spawn knows it" drops from 0-3s (poll interval) to <100ms (subprocess overhead of the hook).
+| Command | Purpose |
+|---|---|
+| `orchestra spawn ID MODEL [--role pm\|engineer] [--brief PATH] [--worktree NAME] [TASK]` | Spawn a worker. `--brief` reads the brief from a file; `--worktree` creates an isolated worktree. PM-only: `--role pm` and `--brief` for the PM itself; engineers can be spawned by either the user (manual mode) or the PM. |
+| `orchestra send <worker_id> "<msg>"` | Send a message to a worker's pane via `send_multiline`. Records `message_sent` event. |
+| `orchestra answer <escalation_id> "<answer>"` | Resolve an escalation (DB write) AND send the answer to the asking worker's pane. |
+| `orchestra poll [--timeout 30]` | Block up to N seconds for a new event in any worker the PM tracks. Print a structured summary. PM-flavoured wrapper around state.db queries. |
+| `orchestra merge <worker_id>` | `git merge orch/<worker_id>` from main. Records merge_attempted/ok/conflict event. |
+| `orchestra reap <worker_id>` | Remove the worktree and delete the branch. |
+| `orchestra worker hook <event>` | Hook entry point (called by claude). |
 
-**Per-turn timeline:**
+Existing v0 commands stay: `init`, `status`, `stop`, `tail`, `dash`, `worker status`, `worker escalate`.
+
+## Spawn flow changes
 
 ```
-worker thinking ...
-worker writes a file via Edit tool
-  PreToolUse hook → tool_started event in DB
-  PostToolUse hook → tool_finished event in DB
-worker emits response
-  Stop hook → status event in DB; turns counter bumped
+orchestra spawn pm opus --role pm --brief mission.md
+  ↓
+state.create_worker(role=pm, worktree=NULL)
+merge .claude/settings.local.json (if not already present)
+ensure_session, new_window
+boot: ORCHESTRA_WORKER_ID=pm ORCHESTRA_STATE_DB=... claude --dangerously-skip-permissions
+trust-prompt dismiss (unchanged)
+wait for session_ready event (NEW — was _wait_idle polling)
+send /opus
+paste-buffer the PM startup prompt (rendered from prompts.render_pm_prompt(...))
+wait for first Stop event (NEW — was _wait_first_status polling)
+return; PM is now alive and reading its brief
 ```
 
-Dashboard sees all of this within ~100ms of each event via SSE.
+Engineer spawn is similar but with `--role engineer --worktree backend` adding a `git worktree add` step before window creation, and changing `cwd` to the worktree path.
+
+## URL shortener spec (the e2e target)
+
+This is the actual project the agents build. Lives in the e2e test as a fixture / mission brief.
+
+### Mission (passed to the PM)
+
+```markdown
+# Mission: URL shortener web app
+
+Build a small FastAPI web app that shortens URLs.
+
+## Acceptance
+- `pytest` passes from the project root.
+- `uvicorn app:app --port 8000` starts the server.
+- `curl -X POST localhost:8000/shorten -H 'content-type: application/json' -d '{"url":"https://example.com"}'`
+  returns HTTP 200 with a JSON body `{"code":"<short>"}`.
+- `curl -I localhost:8000/<short>` returns HTTP 302 with `Location: https://example.com`.
+- `curl localhost:8000/` returns an HTML page with a form posting to `/shorten`.
+
+## Team
+Spawn two engineers in their own worktrees:
+- `backend` (sonnet) — implements the FastAPI app, SQLite storage, and tests.
+- `frontend` (sonnet) — implements the HTML form page and any static assets.
+
+You mediate the API contract. You merge their work into main. You run the
+acceptance checks. You only mark yourself done when all four acceptance
+checks pass.
+```
+
+### Engineer briefs (PM-authored at runtime)
+
+Approximate content; PM writes the real text.
+
+**backend brief:**
+```markdown
+You are building the backend for a URL shortener.
+
+Tech: Python 3.10+, FastAPI, SQLite (stdlib sqlite3), pytest.
+
+Endpoints:
+- POST /shorten — body {"url": "..."} → 200 {"code": "..."}
+- GET /{code} — 302 redirect to the stored URL; 404 if unknown
+
+Files you own:
+- app.py
+- db.py (table: links(code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT))
+- tests/test_app.py (use FastAPI TestClient)
+
+Do not touch templates/ or static/ — frontend owns those.
+
+When you finish, run `pytest -v` and confirm green before signaling DONE.
+```
+
+**frontend brief:**
+```markdown
+You are building the frontend for a URL shortener.
+
+You own templates/index.html and static/style.css.
+
+The page must:
+- Render a form with a URL input + submit button.
+- On submit, POST to /shorten and display the returned short code as a clickable link.
+- Render with reasonable styling (no framework; ~50 lines of vanilla CSS).
+
+Backend contract (confirmed by PM):
+- POST /shorten body {"url":"..."} → 200 {"code":"..."}
+
+You do not write tests for the HTML — manual verification by PM only.
+```
+
+### Verifier
+
+A small bash snippet the PM runs at the end:
+
+```bash
+set -e
+( cd "$PROJECT_ROOT" && pytest -q ) || exit 1
+( cd "$PROJECT_ROOT" && uvicorn app:app --port 8765 ) &
+SERVER_PID=$!
+trap "kill $SERVER_PID 2>/dev/null" EXIT
+sleep 2
+CODE=$(curl -s -X POST localhost:8765/shorten -H 'content-type: application/json' -d '{"url":"https://example.com"}' | jq -r .code)
+test -n "$CODE" || exit 2
+curl -sI "localhost:8765/$CODE" | grep -q '302' || exit 3
+curl -s localhost:8765/ | grep -q '<form' || exit 4
+echo "VERIFIER OK code=$CODE"
+```
 
 ## Risks
 
-- **Hook config format evolution.** Claude Code's hook schema is documented but young. Bumps to claude CLI may rename or reshape events. Mitigation: pin tested version range in `pyproject.toml` (already at `claude` system dep); add a one-line check in `orchestra spawn` that verifies `claude --version` is in the supported range, emits a warning otherwise.
-- **Hook failures.** If `orchestra worker hook` crashes, claude shows a banner and the worker turn may stall. `orchestra worker hook` must be bulletproof: wrap the whole subcommand in a try/except, exit 0 even on internal errors (log to stderr — claude shows it but doesn't block). Better an unrecorded event than a broken hook.
-- **Settings merge collisions.** If the user has existing hooks (e.g. their own Stop hook for desktop notifications), we must not clobber. Deep-merge: append our `{"type": "command", "command": "orchestra worker hook ..."}` to the existing hooks array rather than replacing it.
-- **Hook ordering.** When several hooks fire on the same event, Claude Code runs them in order. Our hook should not assume it's first or last.
-- **DB contention.** Stop hooks fire often. SQLite WAL + busy_timeout=5000 handle low contention well, but if dashboard polls are also writing, we should make sure all hook writes are short transactions.
+- **Claude API rate limits.** Three concurrent workers chewing through tokens can hit limits. v1 does NOT include the watchdog. Mitigation: if it bites, surface the error and stop; document it as known v1 limitation.
+- **PM blocks on `orchestra poll`.** If `poll` is implemented as a sleep loop inside the PM's claude turn, claude's own response-streaming may not look idle. Need to verify the Stop hook fires when `poll` blocks (it should — Stop fires on response end, not on tool end). Test this empirically in the first integration spike.
+- **Worktree state across runs.** Worktrees persist between runs unless `reap`ed. The e2e script should `git worktree remove` everything in `worktrees/` at the start.
+- **Hook stdin format drift.** Claude Code's hook JSON schema may change. First integration spike: write a no-op hook that logs raw stdin to `.orchestra/hook-debug.log`, run against a real worker, document the actual shape.
+- **Brief content drift.** If a brief is too vague, engineers wander. If too prescriptive, no orchestration is exercised. The acceptance test is more useful if PM has to do real coordination work; if engineers can complete in 1 turn each, we proved nothing.
+- **Merge logic.** v1 keeps merges trivial (engineers own disjoint files). If two engineers somehow touch the same file, `git merge` will conflict and the test fails honestly. That's fine for v1; multi-file ownership negotiation is v2.
 
 ## Migration path from v0
 
-v0 and v1 can co-exist. Sequence:
+v0 codebase is the starting point. v1 work adds:
 
-1. **v0.x maintenance release:** ship `orchestra worker hook` CLI and settings.local.json merge logic alongside the existing polling code. No behavior change yet.
-2. **v1.0 release:** spawn switches from polling to hook-event subscription. Worker prompt template drops the manual-status directive. `is_idle` callers go away.
-3. **v1.0.x:** clean up dead code in `spawn.py`. Mark `worker status` CLI as "still supported, but not required for status tracking."
+1. `orchestra worker hook` CLI subcommand + settings.local.json merge logic. Spawn doesn't use it yet — purely additive.
+2. New v1 CLI commands (`send`, `answer`, `poll`, `merge`, `reap`, plus `spawn` flags).
+3. `Role` + `worktree` columns on `workers`.
+4. Role-aware prompts in `prompts.py`.
+5. Spawn refactored to wait on hook events (when available) instead of polling.
+6. v1 e2e fixture: the mission file, the verifier, the bash driver.
 
-Backwards compat: existing `worker status` and `worker escalate` keep working. Old workers that don't have hooks installed will still function — they just won't auto-update turns; the dashboard will show whatever they last wrote manually.
-
-## Out of scope (still v2 territory)
-
-- Multiple concurrent workers + adaptive heartbeat (own spec).
-- Rate-limit watchdog (own spec).
-- Worktree-per-worker isolation (own spec).
-- Per-tool permission allowlists via hook gating (`PreToolUse` could enforce, but that's a v2 design decision).
+Each step is its own task in the implementation plan. v0 tests stay green throughout.
 
 ## Testing
 
-**Unit:**
-- `orchestra worker hook <event>` for each event kind: feed canned JSON to stdin, assert the right row appears in a tmpdir state.db.
-- Settings merge logic: empty file, existing settings with no hooks, existing settings with overlapping hooks. Each case verifies our hook is appended without dropping user content.
+### Unit
 
-**Integration:**
-- `spawn_worker` with `tmux` mocked, simulate a hook firing by inserting a `session_ready` event into the DB while spawn is mid-wait. Assert spawn proceeds.
+- `orchestra worker hook X` for each event kind: feed canned JSON to stdin, assert correct row in tmpdir state.db.
+- Settings.local.json merge: empty file, existing settings with no hooks, existing settings with overlapping hooks.
+- Role-aware prompt rendering: PM template contains team/brief/verifier sections; engineer template contains brief reference + worktree.
+- `orchestra merge` happy path + conflict-path event recording.
+- `orchestra reap` removes worktree and deletes branch.
 
-**End-to-end (manual):**
-- Update `scripts/e2e-spawn.sh` to assert that `session_ready` and at least one `Stop` event appear in state.db within 60s.
-- Verify settings.local.json is created in the spawn dir and contains the expected hooks.
+### Integration
+
+- Spawn waiting on hook events: mock tmux but inject a `session_ready` event into the DB mid-wait; assert spawn proceeds.
+- PM-to-engineer message: `orchestra send <id> "..."` records the right event and calls `tmux.send_multiline`.
+- Escalation round-trip: engineer escalate → PM polls → PM answers → engineer receives in pane (tmux mocked).
+
+### End-to-end (the v1 acceptance test)
+
+`scripts/e2e-build-urlshortener.sh`. Manual / opt-in (consumes API credits + needs authenticated claude). Sets up fresh project dir, runs the PM mission, waits up to 90 min, exits 0 if verifier passed.
+
+This is the contract for v1 being "done."
 
 ## Open questions
 
-- Should `orchestra init` install hooks once per project (in `.claude/settings.local.json`) or should `orchestra spawn` do it per spawn? Init-time is cleaner; spawn-time guarantees it's always present. Decide during implementation.
-- What does the hook's stdin JSON actually look like for each event kind? Need to verify against Claude Code's current hook docs and the running version before locking the schema. First implementation task should be a small script that just logs raw hook stdin to a file, run against a real worker, and adjust the parser to match.
-- How do we cleanly remove hooks when a worker is stopped? Maybe `orchestra stop` shouldn't touch settings (other workers may still need it); the hooks are harmless for non-orchestra workflows since `ORCHESTRA_WORKER_ID` won't be set and the hook subcommand will exit 2 silently.
+- **Where do hooks live: init-time or spawn-time?** `orchestra init` is cleaner (one writeup per project); per-spawn risks racing if two workers spawn close together. Decide during implementation; init-time is the favored path.
+- **`orchestra poll` semantics.** Block until any event OR timeout? Or block until events from a specific worker subset? PM probably wants the latter. Default to "all workers I (the caller) tracked" — implementation detail.
+- **PM authoring its own brief.** The mission file is human-written. Engineer briefs are PM-authored. Should the PM have a template helper (`orchestra brief <engineer> "..."`) or just `Write` to `.orchestra/briefs/<id>.md`? `Write` is simpler.
+- **What if the PM is wrong?** No reviewer in v1. PM's verifier output is the final word. If the PM declares success but the URL shortener has a subtle bug, we won't catch it without a Reviewer role. Documented v2 work; v1 trusts the PM.
+- **Cost ceiling.** A naive run could spend $10-50 in API credits depending on how many turns each engineer needs. e2e script should record cumulative token usage (from Stop hook payload) and abort if a threshold is exceeded. Add a `--max-tokens` flag.
