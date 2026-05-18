@@ -133,7 +133,10 @@ def _render_startup_prompt(
             mission=brief or task,
             worker_id=worker_id,
             project_name=Path(cwd).name,
-            engineer_specs=[],  # PM authors briefs itself; the mission lists the team
+            # Engineer team is conveyed via the mission file; this argument
+            # is only used by callers that programmatically build a team.
+            # Pass an empty list to omit the section.
+            engineer_specs=[],
             verifier_block="(see mission for verifier)",
         )
     if role == "engineer":
