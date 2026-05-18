@@ -90,3 +90,43 @@ class TestRendering:
         (roles / "broken.md").write_text("Hello {nope}\n")
         with pytest.raises(KeyError):
             render_role("broken", project_root=tmp_path)
+
+
+class TestKanbanExampleAssets:
+    """Make sure the shipped kanban example role files actually load via the
+    v2.0 loader. Without this, the example role files are only smoke-tested
+    by the (opt-in, expensive) e2e script.
+    """
+
+    @pytest.mark.parametrize(
+        "name", ["architect", "backend", "web", "cli", "reviewer"]
+    )
+    def test_kanban_role_loads(self, name: str) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        body, perms = _load_role(name, project_root=repo_root / "examples" / "kanban")
+        assert body, f"{name}.md body is empty"
+        # All kanban roles use engineer-shape vars
+        assert "{worker_id}" in body
+        assert "{cwd}" in body
+        assert "{brief_section}" in body
+        assert isinstance(perms, dict)
+
+    def test_reviewer_denies_write_and_push(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        _, perms = _load_role(
+            "reviewer", project_root=repo_root / "examples" / "kanban"
+        )
+        deny = perms.get("deny", [])
+        assert "Write" in deny
+        assert "Edit" in deny
+        assert "Bash(git push:*)" in deny
+
+    def test_architect_allows_write_denies_destructive(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        _, perms = _load_role(
+            "architect", project_root=repo_root / "examples" / "kanban"
+        )
+        assert "Write" in perms.get("allow", [])
+        deny = perms.get("deny", [])
+        assert "Bash(rm:*)" in deny
+        assert "Bash(git push:*)" in deny

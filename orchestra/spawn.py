@@ -8,13 +8,18 @@ v1 changes vs v0:
   autonomous multi-step work, `Stop` only fires when the whole task is done.
 - The trust-prompt dismissal still runs in parallel (capture-pane based)
   because it fires BEFORE Claude reaches the point of emitting SessionStart.
-- New kwargs: role ('engineer'|'pm'|None), brief (markdown body for
-  engineers; mission body for PMs — caller chooses what to inject),
-  worktree_name (when set, a git worktree is created under
-  <project_root>/worktrees/<name> on branch orch/<worker_id>, and the
-  spawn uses that path as cwd).
-- When role is set, role_prompts.render_pm_prompt /
-  render_engineer_prompt is used instead of the v0 single-role template.
+- v2.0: `--role` accepts any string. Lookup order is
+  `<project_root>/.orchestra/roles/<name>.md` (user override) →
+  bundled `orchestra/roles/<name>.md` (e.g. `pm`, `engineer`). Each role
+  file may carry YAML front-matter `permissions:` that orchestra merges
+  into the worker's `.claude/settings.local.json` before opening the
+  pane. Missing role → `role_load_failed` event + status=error, no pane.
+- `brief` is the markdown body for engineers (template var
+  `{brief_section}`); for PMs, it's the full mission body.
+- `worktree_name`: when set, a git worktree is created under
+  `<project_root>/worktrees/<name>` on branch `orch/<worker_id>`, and
+  the spawn uses that path as cwd. Read-only workers (reviewers) omit
+  this and run in the main checkout.
 
 Six steps:
   1. (optional) worktree creation                    + event worktree_created

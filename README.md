@@ -87,7 +87,7 @@ findings via `orchestra worker escalate --blocking --question "..."`.
 Spawn with: `orchestra spawn rev sonnet "" --role reviewer` (no
 `--worktree` — the reviewer reads main).
 
-See `examples/kanban/roles/` for a full multi-role example.
+See `examples/kanban/.orchestra/roles/` for a full multi-role example (architect / backend / web / cli / reviewer). The example uses the same `.orchestra/roles/` convention as a real project, so it doubles as a template for your own.
 
 ## Layout
 

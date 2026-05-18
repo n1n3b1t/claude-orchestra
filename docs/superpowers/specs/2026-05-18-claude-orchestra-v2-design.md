@@ -138,11 +138,11 @@ sufficient and keeps the framework primitive-set small.
 | `orchestra/spawn.py` | Between steps 1 (worktree) and 3 (tmux window): if role file carries permissions, call `settings_merge.ensure_perms` on the target settings file. Pass cwd (main checkout) for no-worktree workers, `worktrees/<name>` for engineers. |
 | `orchestra/cli.py` | Remove the `--role` validation against `{pm, engineer}` (it is currently free-form, but no longer mention those two names in error messages). |
 | `examples/kanban/mission.md` (new) | Mission text for the kanban e2e test. |
-| `examples/kanban/roles/architect.md` (new) | Architect role file with write permissions on `docs/`. |
-| `examples/kanban/roles/backend.md` (new) | Backend engineer role. |
-| `examples/kanban/roles/web.md` (new) | Web engineer role. |
-| `examples/kanban/roles/cli.md` (new) | CLI engineer role. |
-| `examples/kanban/roles/reviewer.md` (new) | Reviewer role (read-only). |
+| `examples/kanban/.orchestra/roles/architect.md` (new) | Architect role file with write permissions on `docs/`. |
+| `examples/kanban/.orchestra/roles/backend.md` (new) | Backend engineer role. |
+| `examples/kanban/.orchestra/roles/web.md` (new) | Web engineer role. |
+| `examples/kanban/.orchestra/roles/cli.md` (new) | CLI engineer role. |
+| `examples/kanban/.orchestra/roles/reviewer.md` (new) | Reviewer role (read-only). |
 | `examples/kanban/verifier.sh` (new) | Acceptance verifier for kanban. |
 | `scripts/e2e-build-kanban.sh` (new) | E2E driver, mirrors `e2e-build-urlshortener.sh` shape (wall-clock + activity + cost watchdogs). |
 | `tests/test_roles.py` (new) | Loader unit tests: file precedence, front-matter parsing, missing-role error, unknown-placeholder error, permissions extraction. |
