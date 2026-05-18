@@ -69,36 +69,54 @@ RESULT_FILE="$PROJECT_DIR/.orchestra/e2e-result"
 _query() { sqlite3 "$DB" "$@"; }
 
 _token_cost_usd() {
-  # Crude per-million-token pricing; update as needed. Reads input/output
-  # tokens from turn_complete payloads.
+  # Per-million-token pricing for Anthropic public list (as of 2026-05-18):
+  #   Opus 4.x   — $15 in / $75 out
+  #   Sonnet 4.x — $3 in / $15 out
+  #   Haiku 4.x  — $1 in / $5 out
+  # Reads token counts from turn_complete payloads; picks a family by
+  # matching the model id with a regex that handles both short aliases
+  # ("opus", "sonnet", "haiku") and full IDs ("claude-opus-4-7",
+  # "claude-opus-4-7[1m]", "claude-sonnet-4-6",
+  # "claude-haiku-4-5-20251001"). Unknown → Opus (conservative).
   python3 - "$DB" <<'PY'
-import json, sqlite3, sys
-db = sys.argv[1]
-rates = {
-    # rough Anthropic public prices ($ per million tokens) — accuracy
-    # matters less than HAVING a bound; tune if it bites.
+import json, re, sqlite3, sys
+
+RATES = {
     "opus":   {"in": 15.00, "out": 75.00},
     "sonnet": {"in":  3.00, "out": 15.00},
     "haiku":  {"in":  1.00, "out":  5.00},
 }
+FAMILY_RE = re.compile(r"(?:^|[-_/])(opus|sonnet|haiku)(?:$|[-\[_/])", re.IGNORECASE)
+
+
+def rate_for(model_id: str | None) -> dict[str, float]:
+    """Pick a price tier from a model identifier. Conservative on miss."""
+    if model_id:
+        m = FAMILY_RE.search(model_id.lower())
+        if m:
+            return RATES[m.group(1).lower()]
+    return RATES["opus"]  # unknown → over-bill rather than under-bill
+
+
+db = sys.argv[1]
 conn = sqlite3.connect(db)
+worker_models = {
+    wid: (m or "") for (wid, m) in conn.execute("SELECT id, model FROM workers")
+}
 total = 0.0
-for (worker_id, kind, payload) in conn.execute(
-    "SELECT worker_id, kind, payload FROM events WHERE kind = 'turn_complete'"
+for (worker_id, payload) in conn.execute(
+    "SELECT worker_id, payload FROM events WHERE kind = 'turn_complete'"
 ):
     try:
-        p = json.loads(payload)
+        p = json.loads(payload) if payload else {}
     except Exception:
         continue
     inp = int(p.get("input_tokens") or 0)
     out = int(p.get("output_tokens") or 0)
-    # Find model from workers table.
-    row = conn.execute(
-        "SELECT model FROM workers WHERE id = ?", (worker_id,)
-    ).fetchone()
-    if row is None: continue
-    model = row[0].lower()
-    rate = rates.get(model) or rates["sonnet"]
+    # Prefer the per-turn model (recorded in the payload when available) over
+    # the worker's spawn-time alias; some runs switch models mid-conversation.
+    model_id = p.get("model") or worker_models.get(worker_id, "")
+    rate = rate_for(model_id)
     total += inp / 1_000_000 * rate["in"]
     total += out / 1_000_000 * rate["out"]
 print(f"{total:.4f}")
