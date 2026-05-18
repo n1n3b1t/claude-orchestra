@@ -416,19 +416,22 @@ class TestSpawnRoleSwitching:
         )
         assert called["which"] == "pm"
 
-    def test_engineer_role_uses_engineer_renderer(
+    def test_engineer_role_uses_render_role_not_shim(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """role='engineer' now goes through the generic branch (render_role),
+        not the render_engineer_prompt shim. The bundled engineer.md is used."""
         from orchestra import role_prompts
         called: dict[str, str | None] = {"which": None}
         monkeypatch.setattr(
             role_prompts, "render_pm_prompt",
             lambda **kw: (called.__setitem__("which", "pm") or "PM PROMPT"),
         )
-        monkeypatch.setattr(
-            role_prompts, "render_engineer_prompt",
-            lambda **kw: (called.__setitem__("which", "eng") or "ENG PROMPT"),
-        )
+        original_render_role = role_prompts.render_role
+        def patched_render_role(name: str, **kw: object) -> str:
+            called["which"] = name
+            return original_render_role(name, **kw)  # type: ignore[arg-type]
+        monkeypatch.setattr(role_prompts, "render_role", patched_render_role)
         for fn, retval in [
             ("ensure_session", None), ("new_window", "s:eng1"),
             ("send_literal", None), ("send_enter", None),
@@ -447,7 +450,7 @@ class TestSpawnRoleSwitching:
             session_name="orch-x", role="engineer",
             brief="implement auth", worktree_name=None,
         )
-        assert called["which"] == "eng"
+        assert called["which"] == "engineer"
 
     def test_no_role_uses_v0_renderer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -607,6 +610,8 @@ class TestPermissionsWiring:
             "Branch: {branch}\n{brief_section}"
         )
         # Patch the side-effectful parts of spawn
+        worktree_path = project_root / "worktrees" / "rev"
+        worktree_path.mkdir(parents=True)
         monkeypatch.setattr(spawn.tmux, "ensure_session", lambda *a, **k: None)
         monkeypatch.setattr(spawn.tmux, "new_window", lambda *a, **k: None)
         monkeypatch.setattr(spawn.tmux, "send_literal", lambda *a, **k: None)
@@ -614,7 +619,7 @@ class TestPermissionsWiring:
         monkeypatch.setattr(spawn.tmux, "send_multiline", lambda *a, **k: None)
         monkeypatch.setattr(spawn.tmux, "capture", lambda *a, **k: "")
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
-        monkeypatch.setattr(spawn.worktree_mod, "add", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.worktree_mod, "add", lambda *a, **k: worktree_path)
 
         db = project_root / ".orchestra" / "state.db"
         db.parent.mkdir(parents=True, exist_ok=True)
@@ -730,3 +735,39 @@ class TestPermissionsWiring:
         kinds = [e.kind for e in state.list_events(conn, worker_id="ghost")]
         assert "role_load_failed" in kinds
         assert not new_window_called["v"]
+
+
+class TestCustomRoleRendering:
+    def test_custom_role_uses_filesystem_template_not_v0_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-pm, non-engineer role like 'reviewer' should render its .md
+        template via the filesystem loader, not fall through to v0."""
+        from orchestra import spawn
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        roles = project_root / ".orchestra" / "roles"
+        roles.mkdir(parents=True)
+        (roles / "reviewer.md").write_text(
+            "## ROLE: REVIEWER\n"
+            "Worker ID: {worker_id}\n"
+            "Workspace: {cwd}\n"
+            "Branch: {branch}\n"
+            "{brief_section}"
+        )
+
+        out = spawn._render_startup_prompt(
+            role="reviewer",
+            worker_id="r1",
+            model="sonnet",
+            task="",
+            ctx_files=[],
+            brief="please review",
+            cwd=str(project_root),
+            branch="orch/r1",
+        )
+        assert "## ROLE: REVIEWER" in out
+        assert "Worker ID: r1" in out
+        assert "Workspace: " in out
+        assert "orch/r1" in out
+        assert "please review" in out

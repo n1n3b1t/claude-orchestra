@@ -109,8 +109,15 @@ def _render_startup_prompt(
     brief: str | None,
     cwd: str,
     branch: str,
+    project_root: str | None = None,
 ) -> str:
-    """Select PM / Engineer / v0 prompt renderer based on `role`."""
+    """Select PM / Engineer / v0 prompt renderer based on `role`.
+
+    ``cwd`` is the working directory for the worker (the worktree path for
+    engineers, the project root for PMs and custom roles). ``project_root``
+    is the canonical project root used for role-template lookup; it defaults
+    to ``cwd`` when not supplied (correct for non-worktree workers).
+    """
     if role == "pm":
         return role_prompts.render_pm_prompt(
             mission=brief or task,
@@ -122,13 +129,25 @@ def _render_startup_prompt(
             engineer_specs=[],
             verifier_block="(see mission for verifier)",
         )
-    if role == "engineer":
-        return role_prompts.render_engineer_prompt(
+    if role is not None:
+        # v2.0: any non-pm role renders via the filesystem loader with
+        # engineer-shape variables (worker_id, cwd, branch, brief_section).
+        # Template lookup uses project_root so user overrides in
+        # <project_root>/.orchestra/roles/<name>.md are found even when the
+        # worker's cwd is a worktree subdirectory.
+        if brief is not None:
+            brief_section = "### YOUR BRIEF\n" f"{brief}\n"
+        else:
+            brief_section = (
+                "### YOUR BRIEF\n(none — wait for `orchestra send` instructions)\n"
+            )
+        return role_prompts.render_role(
+            role,
+            project_root=Path(project_root or cwd),
             worker_id=worker_id,
             cwd=cwd,
             branch=branch,
-            brief_path=None,
-            brief_content=brief,
+            brief_section=brief_section,
         )
     # v0 fallback — no role set
     return prompts.render_startup_prompt(
@@ -250,6 +269,7 @@ def spawn_worker(
         startup = _render_startup_prompt(
             role=role, worker_id=worker_id, model=model, task=task,
             ctx_files=ctx_files, brief=brief, cwd=cwd, branch=branch,
+            project_root=project_root,
         )
         inject_ok = False
         for attempt in (1, 2):
