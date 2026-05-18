@@ -36,6 +36,7 @@ INTERESTING_KINDS = (
     "merge_ok",
     "merge_conflict",
     "hook_error",
+    "worker_done",
 )
 
 

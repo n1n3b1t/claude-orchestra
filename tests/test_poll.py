@@ -44,6 +44,20 @@ class TestSnapshot:
         assert "tool_started" not in out
         assert "tool_finished" not in out
 
+    def test_worker_done_counted_as_interesting(self, tmp_db: Path) -> None:
+        # Issue #4: worker_done was emitted by `orchestra worker done` but
+        # excluded from INTERESTING_KINDS, so a PM keying on the new-event
+        # count missed engineer completions between polls.
+        _setup(tmp_db)
+        conn = state.connect(tmp_db)
+        state.record_event(conn, "tool_started", worker_id="backend", tool="Read")
+        state.record_event(conn, "worker_done", worker_id="backend", summary="ok")
+        conn.close()
+        out = poll.render_snapshot(tmp_db, since_id=0)
+        # The new-event count for backend should be 1 (worker_done), not 0.
+        line = next(ln for ln in out.splitlines() if "backend" in ln)
+        assert "1" in line
+
     def test_pending_escalations_listed(self, tmp_db: Path) -> None:
         _setup(tmp_db)
         conn = state.connect(tmp_db)
