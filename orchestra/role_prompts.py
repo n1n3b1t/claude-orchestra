@@ -24,9 +24,17 @@ def render_pm_prompt(
     engineer_specs: Sequence[tuple[str, str, str]],  # (id, model, brief)
     verifier_block: str,
 ) -> str:
-    team = "\n".join(
-        f"- `{eid}` ({model}) — {brief}" for eid, model, brief in engineer_specs
-    )
+    if engineer_specs:
+        team = "\n".join(
+            f"- `{eid}` ({model}) — {brief}" for eid, model, brief in engineer_specs
+        )
+        team_section = (
+            "### YOUR TEAM\n"
+            "You will spawn and coordinate these engineers:\n"
+            f"{team}\n\n"
+        )
+    else:
+        team_section = ""
     return f"""## ROLE: Project Manager
 Project: {project_name}
 Worker ID: {worker_id}
@@ -34,11 +42,7 @@ Worker ID: {worker_id}
 ### MISSION
 {mission}
 
-### YOUR TEAM
-You will spawn and coordinate these engineers:
-{team}
-
-### TOOLS YOU CAN USE
+{team_section}### TOOLS YOU CAN USE
 - orchestra spawn <id> <model> --role engineer --brief <path> --worktree <name>
 - orchestra send <worker_id> "<message>"
 - orchestra poll [--timeout 30]            # blocking; returns state snapshot

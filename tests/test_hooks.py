@@ -160,6 +160,61 @@ class TestTypedDispatch:
         w = state.get_worker(conn, "w1")
         assert w is not None and w.turns == 0
 
+    def test_stop_reads_usage_from_transcript_path(
+        self, tmp_path: Path, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stop payload carries `transcript_path` (per Claude Code's hook spec),
+        # not direct usage. The LAST assistant line's `message.usage` is the
+        # cumulative count we should bill against.
+        conn = _seed_worker(tmp_db)
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(tmp_db))
+        transcript = tmp_path / "transcript.jsonl"
+        lines = [
+            {"type": "user", "message": {"role": "user", "content": "hi"}},
+            {"type": "assistant", "message": {
+                "role": "assistant",
+                "usage": {"input_tokens": 10, "output_tokens": 5,
+                          "cache_read_input_tokens": 0,
+                          "cache_creation_input_tokens": 0},
+            }},
+            {"type": "assistant", "message": {
+                "role": "assistant",
+                "usage": {"input_tokens": 200, "output_tokens": 80,
+                          "cache_read_input_tokens": 15,
+                          "cache_creation_input_tokens": 25},
+            }},
+        ]
+        transcript.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        payload = {"transcript_path": str(transcript)}
+        rc = hooks.dispatch("Stop", stdin_text=json.dumps(payload))
+        assert rc == 0
+        evts = [e for e in state.list_events(conn, worker_id="w1")
+                if e.kind == "turn_complete"]
+        assert len(evts) == 1
+        # Cumulative usage comes from the LAST assistant line.
+        assert evts[0].payload.get("input_tokens") == 200
+        assert evts[0].payload.get("output_tokens") == 80
+        assert evts[0].payload.get("cache_read_tokens") == 15
+        assert evts[0].payload.get("cache_creation_tokens") == 25
+
+    def test_stop_falls_back_to_zero_when_transcript_missing(
+        self, tmp_path: Path, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defensive: transcript path doesn't exist on disk → don't crash,
+        # don't fall through to direct-usage; just record zeros.
+        conn = _seed_worker(tmp_db)
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(tmp_db))
+        payload = {"transcript_path": str(tmp_path / "does-not-exist.jsonl")}
+        rc = hooks.dispatch("Stop", stdin_text=json.dumps(payload))
+        assert rc == 0
+        evts = [e for e in state.list_events(conn, worker_id="w1")
+                if e.kind == "turn_complete"]
+        assert len(evts) == 1
+        assert evts[0].payload.get("input_tokens") == 0
+        assert evts[0].payload.get("output_tokens") == 0
+
     def test_internal_error_records_hook_error_and_returns_zero(
         self, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

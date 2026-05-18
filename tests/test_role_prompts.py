@@ -53,6 +53,29 @@ class TestPMPrompt:
         assert "backend" in out
         assert "frontend" in out
 
+    def test_empty_engineer_specs_omits_team_section(self) -> None:
+        out = role_prompts.render_pm_prompt(
+            mission="Build a URL shortener.",
+            worker_id="pm",
+            project_name="urlshortener",
+            engineer_specs=[],
+            verifier_block="pytest -q",
+        )
+        assert "YOUR TEAM" not in out
+        assert "### YOUR TEAM" not in out
+        assert "You will spawn and coordinate" not in out
+
+    def test_non_empty_engineer_specs_includes_team_section(self) -> None:
+        out = role_prompts.render_pm_prompt(
+            mission="Build a URL shortener.",
+            worker_id="pm",
+            project_name="urlshortener",
+            engineer_specs=[("alice", "sonnet", "implements the backend")],
+            verifier_block="pytest -q",
+        )
+        assert "YOUR TEAM" in out
+        assert "alice" in out
+
 
 class TestEngineerPrompt:
     def test_required_directives_present(self) -> None:

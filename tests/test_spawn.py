@@ -526,3 +526,90 @@ class TestSpawnRoleSwitching:
         worker = state.get_worker(conn, "w1")
         assert worker is not None
         assert worker.status == "working"
+
+
+class TestSpawnConnectionLifetime:
+    def test_wait_helpers_receive_fresh_connection_not_callers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """spawn_worker must not hold the caller's conn across the blocking waits.
+
+        Verified by monkeypatching the two wait helpers to capture whatever
+        conn they receive, then asserting it is NOT the same object as the
+        conn the caller passed in. A fresh short-lived connection is used
+        internally so the caller's conn is freed during ~60-90s of waiting.
+        """
+        captured: dict[str, sqlite3.Connection | None] = {"idle": None, "first": None}
+
+        def fake_wait_idle(conn_, worker_id_, *, target=None):
+            captured["idle"] = conn_
+            state.record_event(conn_, "session_ready", worker_id=worker_id_)
+            return True
+
+        def fake_wait_first(conn_, worker_id_):
+            captured["first"] = conn_
+            state.record_event(conn_, "turn_complete", worker_id=worker_id_)
+            return True
+
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event", fake_wait_first)
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:w1"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        db = tmp_path / "state.db"
+        caller_conn = state.connect(db)
+        state.init_schema(caller_conn)
+
+        spawn.spawn_worker(
+            caller_conn, worker_id="w1", model="sonnet", task="t",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x",
+        )
+
+        assert captured["idle"] is not None
+        assert captured["first"] is not None
+        assert captured["idle"] is not caller_conn, (
+            "spawn_worker must not pass caller's conn to _wait_idle_via_event"
+        )
+        assert captured["first"] is not caller_conn, (
+            "spawn_worker must not pass caller's conn to _wait_first_status_via_event"
+        )
+
+    def test_caller_conn_still_sees_post_wait_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Post-wait events written via the internal conn must be visible
+        on the caller's conn (WAL + autocommit = shared visibility)."""
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
+                            lambda *a, **k: True)
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", "s:w1"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        db = tmp_path / "state.db"
+        caller_conn = state.connect(db)
+        state.init_schema(caller_conn)
+        spawn.spawn_worker(
+            caller_conn, worker_id="w1", model="sonnet", task="t",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x",
+        )
+
+        # spawn_ok is written on the internal conn — caller must still see it.
+        kinds = [e.kind for e in state.list_events(caller_conn, worker_id="w1")]
+        assert "spawn_ok" in kinds
+        worker = state.get_worker(caller_conn, "w1")
+        assert worker is not None
+        assert worker.status == "working"

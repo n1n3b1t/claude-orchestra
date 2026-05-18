@@ -133,7 +133,10 @@ def _render_startup_prompt(
             mission=brief or task,
             worker_id=worker_id,
             project_name=Path(cwd).name,
-            engineer_specs=[],  # PM authors briefs itself; the mission lists the team
+            # Engineer team is conveyed via the mission file; this argument
+            # is only used by callers that programmatically build a team.
+            # Pass an empty list to omit the section.
+            engineer_specs=[],
             verifier_block="(see mission for verifier)",
         )
     if role == "engineer":
@@ -168,7 +171,7 @@ def spawn_worker(
     pane_target = f"{session_name}:{worker_id}"
 
     # Step 1: worker row — created before any external operations so that
-    # failures always have an audit trail.
+    # failures always have an audit trail. Uses the caller's conn.
     state.create_worker(
         conn, id=worker_id, task=task, model=model,
         branch=branch, pane_target=pane_target,
@@ -208,52 +211,68 @@ def spawn_worker(
     tmux.send_literal(target, boot_cmd)
     tmux.send_enter(target)
 
-    # Step 4: wait for SessionStart hook (session_ready event). Trust-prompt
-    # dismissal runs in parallel because it fires BEFORE SessionStart.
-    if not _wait_idle_via_event(conn, worker_id, target=target):
-        last_screen = tmux.capture(target, lines=20)
-        state.record_event(
-            conn, "spawn_stale_idle", worker_id=worker_id, last_screen=last_screen,
-        )
-        state.update_worker(conn, worker_id, status="stale_spawn")
-        # Continue anyway — Claude may still come up; PM can send a kickoff message
-        # if needed. The first-status wait below still applies.
-    else:
-        state.record_event(conn, "spawn_idle", worker_id=worker_id)
-
-    # Step 5: switch model
-    tmux.send_literal(target, f"/{model}")
-    tmux.send_enter(target)
-    time.sleep(3.0)
-    state.record_event(conn, "model_switched", worker_id=worker_id, model=model)
-
-    # Step 6: inject startup prompt with 1 retry
-    startup = _render_startup_prompt(
-        role=role, worker_id=worker_id, model=model, task=task,
-        ctx_files=ctx_files, brief=brief, cwd=cwd, branch=branch,
-    )
-    inject_ok = False
-    for attempt in (1, 2):
-        try:
-            tmux.send_multiline(target, startup, buffer_name=f"orch-{worker_id}")
-            inject_ok = True
-            break
-        except Exception as e:  # noqa: BLE001
+    # Switch to a fresh short-lived connection for the blocking wait windows
+    # and post-wait writes. The caller's `conn` is intentionally not held
+    # across the ~60-90s of waiting in _wait_idle_via_event /
+    # _wait_first_status_via_event — keeps spawn_worker from pinning the
+    # caller's connection during long blocking poll loops.
+    wait_conn = state.connect(state_db)
+    try:
+        # Step 4: wait for SessionStart hook (session_ready event). Trust-prompt
+        # dismissal runs in parallel because it fires BEFORE SessionStart.
+        if not _wait_idle_via_event(wait_conn, worker_id, target=target):
+            last_screen = tmux.capture(target, lines=20)
             state.record_event(
-                conn, "prompt_inject_retry",
-                worker_id=worker_id, attempt=attempt, error=repr(e),
+                wait_conn, "spawn_stale_idle", worker_id=worker_id,
+                last_screen=last_screen,
             )
-            time.sleep(1.0)
-    if not inject_ok:
-        state.record_event(conn, "prompt_inject_failed", worker_id=worker_id)
-        state.update_worker(conn, worker_id, status="error")
-        return
-    state.record_event(conn, "prompt_injected", worker_id=worker_id)
+            state.update_worker(wait_conn, worker_id, status="stale_spawn")
+            # Continue anyway — Claude may still come up; PM can send a kickoff
+            # message if needed. The first-status wait below still applies.
+        else:
+            state.record_event(wait_conn, "spawn_idle", worker_id=worker_id)
 
-    # Step 7: wait for first turn_complete event (proof of life).
-    if _wait_first_status_via_event(conn, worker_id):
-        state.record_event(conn, "spawn_ok", worker_id=worker_id)
-        state.update_worker(conn, worker_id, status="working")
-    else:
-        state.update_worker(conn, worker_id, status="stale_spawn")
-        state.record_event(conn, "spawn_first_status_timeout", worker_id=worker_id)
+        # Step 5: switch model
+        tmux.send_literal(target, f"/{model}")
+        tmux.send_enter(target)
+        time.sleep(3.0)
+        state.record_event(
+            wait_conn, "model_switched", worker_id=worker_id, model=model,
+        )
+
+        # Step 6: inject startup prompt with 1 retry
+        startup = _render_startup_prompt(
+            role=role, worker_id=worker_id, model=model, task=task,
+            ctx_files=ctx_files, brief=brief, cwd=cwd, branch=branch,
+        )
+        inject_ok = False
+        for attempt in (1, 2):
+            try:
+                tmux.send_multiline(target, startup, buffer_name=f"orch-{worker_id}")
+                inject_ok = True
+                break
+            except Exception as e:  # noqa: BLE001
+                state.record_event(
+                    wait_conn, "prompt_inject_retry",
+                    worker_id=worker_id, attempt=attempt, error=repr(e),
+                )
+                time.sleep(1.0)
+        if not inject_ok:
+            state.record_event(
+                wait_conn, "prompt_inject_failed", worker_id=worker_id,
+            )
+            state.update_worker(wait_conn, worker_id, status="error")
+            return
+        state.record_event(wait_conn, "prompt_injected", worker_id=worker_id)
+
+        # Step 7: wait for first turn_complete event (proof of life).
+        if _wait_first_status_via_event(wait_conn, worker_id):
+            state.record_event(wait_conn, "spawn_ok", worker_id=worker_id)
+            state.update_worker(wait_conn, worker_id, status="working")
+        else:
+            state.update_worker(wait_conn, worker_id, status="stale_spawn")
+            state.record_event(
+                wait_conn, "spawn_first_status_timeout", worker_id=worker_id,
+            )
+    finally:
+        wait_conn.close()
