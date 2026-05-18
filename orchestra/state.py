@@ -3,22 +3,62 @@
 Tables:
 - workers: one row per spawned worker, mutated as the worker progresses.
   v1 columns: role ('engineer'|'pm'), worktree (None unless --worktree was set).
-- events: append-only audit trail; payload is JSON.
+- events: append-only audit trail; payload is JSON. `events.kind` is free-form
+  text — no schema migration is needed when a new kind is added.
 - escalations: blocking/non-blocking questions from workers to user / PM.
 
-Event kinds (v0 → v1):
-- v0: spawn_start, spawn_window, spawn_idle, spawn_timeout, spawn_trust_accepted,
-      model_switched, prompt_injected, prompt_inject_retry, prompt_inject_failed,
-      spawn_ok, spawn_first_status_timeout, status, escalation,
-      escalation_resolved, stopped, stop_send_failed, hook_error
-- v1 (hook-driven): session_ready (SessionStart), turn_complete (Stop, payload
-      includes input_tokens/output_tokens/cache_read_tokens/cache_creation_tokens),
-      tool_started (PreToolUse), tool_finished (PostToolUse), session_ended
-      (SessionEnd), notification (Notification)
-- v1 (coordination): message_sent (orchestra send), worktree_created,
-      worktree_reaped, merge_attempted, merge_conflict, merge_ok
+Event kinds (events.kind values), grouped by lifecycle:
 
-Worker status values: spawning, working, done (and any custom values).
+  Spawn lifecycle (orchestra/spawn.py):
+    spawn_start                  — worker row created, spawn flow started
+    worktree_created             — engineer worktree set up under worktrees/<name>
+    worktree_failed              — git worktree add failed; worker → status=error
+    spawn_window                 — tmux window for the worker pane created
+    spawn_trust_accepted         — Claude trust prompt dismissed in parallel
+    spawn_idle                   — session_ready event arrived in time
+    spawn_stale_idle             — _wait_idle_via_event timed out (soft, continues)
+    model_switched               — /<model> slash command sent to pane
+    prompt_inject_retry          — send_multiline raised; retrying
+    prompt_inject_failed         — startup prompt injection gave up
+    prompt_injected              — startup prompt successfully sent
+    spawn_ok                     — first turn_complete arrived (proof of life)
+    spawn_first_status_timeout   — first-status wait timed out (soft)
+
+  Hook-driven worker lifecycle (orchestra/hooks.py):
+    session_ready                — SessionStart hook fired; worker → working
+    turn_complete                — Stop hook fired; worker.turns += 1
+                                   (payload tokens: input_tokens, output_tokens,
+                                   cache_read_tokens, cache_creation_tokens —
+                                   currently best-effort; real counts live in
+                                   the transcript JSONL, see issue #8)
+    tool_started                 — PreToolUse hook fired
+    tool_finished                — PostToolUse hook fired
+    session_ended                — SessionEnd hook fired; worker → done unless
+                                   already in a terminal state
+    notification                 — Notification hook fired (permission stalls)
+    done_to_working_blocked      — SessionStart re-entry intercepted because
+                                   the worker had already cooperatively
+                                   completed (preserved-done; issue #2 / #14)
+    hook_error                   — caught exception inside a hook handler
+
+  Coordination (orchestra/cli.py, orchestra/web.py):
+    status                       — worker self-reported progress + turns
+    message_sent                 — `orchestra send` typed into the worker pane
+    escalation                   — `orchestra worker escalate` created a row
+    escalation_resolved          — `orchestra answer` or dashboard resolved it
+    worker_done                  — cooperative termination via
+                                   `orchestra worker done` (worker → done)
+    stopped                      — `orchestra stop` sent Ctrl-C twice
+    stop_send_failed             — Ctrl-C send raised; worker may still run
+
+  Merge / worktree (orchestra/cli.py):
+    merge_attempted              — `orchestra merge` invoked git merge
+    merge_ok                     — git merge returned 0
+    merge_conflict               — git merge returned non-zero
+    worktree_reaped              — `orchestra reap` removed worktree + branch
+
+Worker status values: spawning, working, waiting (blocking escalation),
+done, error, stopped, stop_send_failed, stale_spawn.
 
 Connection settings: WAL journal mode + 5s busy timeout.
 """
