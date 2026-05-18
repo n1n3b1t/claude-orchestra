@@ -51,6 +51,44 @@ the PM signals done (or a watchdog fires):
 orchestra run examples/urlshortener-mission.md
 ```
 
+## Defining custom roles
+
+Role templates are markdown files. Lookup order:
+
+1. `<your-project>/.orchestra/roles/<name>.md` (your override, wins)
+2. `orchestra/roles/<name>.md` (bundled built-in)
+
+A role file is a `str.format_map`-formatted prompt body with optional YAML
+front matter that may declare `permissions.allow` / `permissions.deny`
+(Claude Code tool patterns). Minimal example for a read-only reviewer:
+
+```markdown
+---
+permissions:
+  allow:
+    - Read
+    - Grep
+    - Glob
+    - "Bash(git log:*)"
+    - "Bash(git diff:*)"
+  deny:
+    - Write
+    - Edit
+    - "Bash(rm:*)"
+---
+## ROLE: Reviewer
+Worker ID: {worker_id}
+Workspace: {cwd}
+
+You are a read-only reviewer. Read the merged main branch and escalate
+findings via `orchestra worker escalate --blocking --question "..."`.
+```
+
+Spawn with: `orchestra spawn rev sonnet "" --role reviewer` (no
+`--worktree` — the reviewer reads main).
+
+See `examples/kanban/roles/` for a full multi-role example.
+
 ## Layout
 
 ```

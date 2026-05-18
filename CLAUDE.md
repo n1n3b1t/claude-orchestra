@@ -90,6 +90,15 @@ Each engineer is spawned with `--worktree <name>`, which creates a git worktree 
 
 `spawn._render_startup_prompt` branches on `role` to pick which template to render. v0 callers (no `--role` flag) hit the v0 path; v1 callers hit the role-aware path.
 
+### Role templates and per-role permissions (v2.0)
+
+**Role templates** (`orchestra/roles/*.md`) are loaded by `role_prompts.py`
+with project overrides at `<project>/.orchestra/roles/<name>.md` taking
+precedence. Each may carry YAML front matter with `permissions:` that
+gets merged into the worker's settings.local.json before spawn — that's
+how the v2.0 reviewer pattern is built without any orchestra-side
+"read-only" flag.
+
 ### Event-driven spawn waits (not pane-polling)
 
 v1 replaced v0's `tmux capture-pane` polling with DB-event waits:
