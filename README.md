@@ -42,6 +42,15 @@ restarted manually) and the round-trip only completed because of manual
 intervention. Brittle polling logic isn't just a nuisance — it can leave the
 target in an unexpected state.
 
+## One-shot runner
+
+To kick off a full PM-coordinated run from a mission file and block until
+the PM signals done (or a watchdog fires):
+
+```
+orchestra run examples/urlshortener-mission.md
+```
+
 ## Layout
 
 ```
