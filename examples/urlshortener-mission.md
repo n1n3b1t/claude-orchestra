@@ -19,4 +19,4 @@ You mediate the API contract. You merge their work into main. You run the
 acceptance checks. You only mark yourself done when all four acceptance
 checks pass.
 
-The verifier script is at `examples/urlshortener-verifier.sh`.
+The verifier script is at `./verifier.sh`.
