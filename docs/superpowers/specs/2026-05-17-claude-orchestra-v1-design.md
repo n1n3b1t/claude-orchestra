@@ -523,3 +523,35 @@ This is the contract for v1 being "done."
 - **PM resume protocol.** If single mega-turn proves too crash-prone in practice, build `.orchestra/pm-notes.md` + `orchestra resume <project>`. Add only if data demands it.
 - **Per-worker token caps.** v1 has only an e2e-level total-token ceiling. Per-worker caps (`--max-tokens` on spawn) are v2 ergonomics.
 - **Rate-limit watchdog.** Single-source-of-truth retry-on-429 logic. v2 hardening.
+
+### SessionEnd reliability (post-v1.2)
+
+**Observation.** During the v1.2 dogfood run, 4 engineer workers all
+completed cleanly — each emitted `worker_done` and then `/exit`-ed —
+but only 1 `session_ended` event landed in `state.db`. Status correctness
+was not affected, because `worker_done` had already set
+`workers.status='done'` before exit; the missing `SessionEnd` hooks were
+silent and orchestration proceeded normally.
+
+**Likely cause.** Claude Code's `SessionEnd` hook is not reliably
+invoked across all termination paths. In particular, `/exit` does not
+consistently trigger it, and certain forced terminations (signals,
+crashes, parent-tmux teardown) skip it entirely. The hook is best-effort
+by Claude Code's design, not a guaranteed lifecycle event.
+
+**Why this is fine.** `worker_done` is a *cooperative* termination
+signal — the worker explicitly calls `orchestra worker done --summary
+"..."` before `/exit`. That CLI writes `workers.status='done'` and
+records a `worker_done` event in the same transaction, so the
+"worker finished" state lands before the pane closes. The cooperative
+signal is the source of truth; `session_ended` is observational
+telemetry that confirms the OS-level lifecycle when it happens to fire.
+
+**Implication for future changes.** Do **not** add fallback logic that
+depends on `session_ended` to recover or transition worker state — those
+paths will silently fail on the (apparently common) execution traces
+where the hook isn't fired. A code comment at the `SessionEnd` branch in
+`orchestra/hooks.py` records this contract inline. If a future change
+needs reliable "worker exited" signalling, add a new cooperative event
+(e.g. extend `worker_done`'s payload) rather than tightening dependence
+on `SessionEnd`.

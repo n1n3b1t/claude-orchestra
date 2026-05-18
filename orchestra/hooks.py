@@ -190,6 +190,9 @@ def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
                            output_summary=str(payload.get("tool_output", ""))[:200])
         return
     if event == "SessionEnd":
+        # NOTE: SessionEnd is best-effort — Claude Code does not always fire it
+        # on /exit or forced termination. Source of truth for "done" is the
+        # cooperative `worker_done` event, written by the worker before exit.
         w = state.get_worker(conn, wid)
         # SessionEnd marks done unless the worker already failed.
         if w is not None and w.status not in ("error", "stopped", "stop_send_failed", "done"):
