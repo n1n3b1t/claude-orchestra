@@ -112,6 +112,39 @@ class TestTypedDispatch:
         w = state.get_worker(conn, "w1")
         assert w is not None and w.status == "error"
 
+    def test_session_end_keeps_cooperative_done_status(
+        self, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Issue #2: SessionEnd guard tuple was missing 'done', so a worker
+        # that had already called `orchestra worker done` could be re-flipped.
+        conn = _seed_worker(tmp_db)
+        state.update_worker(conn, "w1", status="done")
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(tmp_db))
+        hooks.dispatch("SessionEnd", stdin_text="{}")
+        w = state.get_worker(conn, "w1")
+        assert w is not None and w.status == "done"
+
+    def test_session_start_does_not_overwrite_done(
+        self, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Issue #2: SessionStart -> worker_done -> SessionStart was clobbering
+        # the cooperative 'done' back to 'working'.
+        conn = _seed_worker(tmp_db)
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(tmp_db))
+        # First SessionStart — normal entry.
+        hooks.dispatch("SessionStart", stdin_text='{"session_id":"s1"}')
+        # Worker calls `orchestra worker done` (mirrors cli.worker_done).
+        state.update_worker(conn, "w1", status="done", progress="finished")
+        state.record_event(conn, "worker_done", worker_id="w1", summary="finished")
+        # Second SessionStart (re-attach / restart) — must NOT clobber.
+        hooks.dispatch("SessionStart", stdin_text='{"session_id":"s2"}')
+        w = state.get_worker(conn, "w1")
+        assert w is not None and w.status == "done"
+        kinds = [e.kind for e in state.list_events(conn, worker_id="w1")]
+        assert "done_to_working_blocked" in kinds
+
     def test_pre_post_tool_use_record_events_only(
         self, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -100,7 +100,14 @@ def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:
 
 def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
     if event == "SessionStart":
-        state.update_worker(conn, wid, status="working")
+        w = state.get_worker(conn, wid)
+        if w is not None and w.status == "done":
+            # Worker already signalled cooperative completion (orchestra worker done).
+            # A re-entry here would corrupt the final status row — see issue #2.
+            state.record_event(conn, "done_to_working_blocked", worker_id=wid,
+                               session_id=payload.get("session_id"))
+        else:
+            state.update_worker(conn, wid, status="working")
         state.record_event(conn, "session_ready", worker_id=wid,
                            session_id=payload.get("session_id"))
         return
@@ -124,7 +131,7 @@ def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
     if event == "SessionEnd":
         w = state.get_worker(conn, wid)
         # SessionEnd marks done unless the worker already failed.
-        if w is not None and w.status not in ("error", "stopped", "stop_send_failed"):
+        if w is not None and w.status not in ("error", "stopped", "stop_send_failed", "done"):
             state.update_worker(conn, wid, status="done")
         state.record_event(conn, "session_ended", worker_id=wid,
                            reason=payload.get("reason"))
