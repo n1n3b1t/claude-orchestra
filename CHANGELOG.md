@@ -18,7 +18,14 @@ multi-stack projects without encoding flow-specific logic.
   restrictive permissions, spawned without `--worktree`. No new flag.
 
 **Proof:** `examples/kanban/` plus `scripts/e2e-build-kanban.sh` exercise
-the framework end-to-end on a backend + web + CLI + reviewer project.
+the framework end-to-end on an architect + backend + web + CLI + reviewer
+project. First run on 2026-05-18 completed in ~7 min wall-clock, $under-budget
+cost: architect committed `docs/api.yaml`, three engineers built `backend/app.py`
+(FastAPI), `web/index.html`+`app.js`, and `cli/kanban_cli.py` in parallel, the
+reviewer (read-only role, no worktree) approved with `permissions.deny` enforced
+against Write/Edit/rm/git push at the Claude Code layer, and the verifier
+(`bash examples/kanban/verifier.sh`) exited 0 with `OK` after 6 acceptance
+checks (health → boards → cards → patch → web HTML → CLI list).
 
 **Backward compatibility:** v1.x missions using `--role pm` and
 `--role engineer` work unchanged — the bundled `pm.md` and `engineer.md`
