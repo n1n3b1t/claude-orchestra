@@ -34,7 +34,7 @@ orchestra = "orchestra.__main__:main"
 include = ["orchestra*"]
 
 [tool.setuptools.package-data]
-orchestra = ["templates/*.html", "static/*"]
+orchestra = ["templates/*.html", "static/*", "roles/*.md"]
 
 [tool.ruff]
 line-length = 100
