@@ -416,6 +416,18 @@ class TestAnswer:
         assert sent and sent[0][0] == "s:backend"
         assert "use {code:str}" in sent[0][1]
 
+    def test_answer_invalid_id_exits_2_with_clean_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Issue #3: unhandled KeyError on a bad/typoed escalation id used to
+        # surface as a Python traceback with exit 1, with no actionable message.
+        _init_in(tmp_path, monkeypatch)
+        monkeypatch.setattr(cli.tmux, "send_multiline",
+                            lambda t, m, **k: None)
+        result = runner.invoke(app, ["answer", "9999", "irrelevant"])
+        assert result.exit_code == 2
+        assert "no open escalation #9999" in (result.stderr or result.output)
+
 
 class TestPoll:
     def test_poll_prints_snapshot(
