@@ -469,3 +469,80 @@ class TestMergeReap:
             kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
         assert "merge_attempted" in kinds
         assert "merge_ok" in kinds
+
+    def test_reap_calls_worktree_remove_and_records_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        from orchestra import worktree as wt_mod
+        calls: list = []
+        def fake_remove(project_root, *, name, worker_id):  # noqa: ANN001
+            calls.append({"project_root": project_root,
+                          "name": name, "worker_id": worker_id})
+        monkeypatch.setattr(wt_mod, "remove", fake_remove)
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id="backend", task="t", model="sonnet",
+                branch="orch/backend", pane_target="s:backend",
+                role="engineer", worktree="backend",
+            )
+        result = runner.invoke(app, ["reap", "backend"])
+        assert result.exit_code == 0, result.output
+        assert calls == [
+            {"project_root": Path.cwd(), "name": "backend", "worker_id": "backend"},
+        ]
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+        assert "worktree_reaped" in kinds
+
+    def test_reap_no_worktree_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A worker without a worktree (e.g. PM, or v0 worker) cannot be reaped."""
+        _init_in(tmp_path, monkeypatch)
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id="pm", task="coordinate", model="opus",
+                branch=None, pane_target="s:pm",
+                role="pm", worktree=None,
+            )
+        result = runner.invoke(app, ["reap", "pm"])
+        assert result.exit_code == 2
+        assert "no worktree" in (result.stderr or result.output)
+
+    def test_reap_unknown_worker_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["reap", "ghost"])
+        assert result.exit_code == 2
+        assert "no worktree" in (result.stderr or result.output)
+
+    def test_reap_tolerates_already_gone_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`worktree.remove` is a clean no-op when the dir is already gone — reap
+        still records `worktree_reaped` and does not mutate worker status."""
+        _init_in(tmp_path, monkeypatch)
+        from orchestra import worktree as wt_mod
+        # Simulate the real worktree.remove's no-op-when-missing behaviour.
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: None,
+        )
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id="backend", task="t", model="sonnet",
+                branch="orch/backend", pane_target="s:backend",
+                role="engineer", worktree="backend",
+            )
+            state.update_worker(conn, "backend", status="done")
+        result = runner.invoke(app, ["reap", "backend"])
+        assert result.exit_code == 0, result.output
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+            w = state.get_worker(conn, "backend")
+        assert "worktree_reaped" in kinds
+        # reap does not mutate worker status — cooperative `worker done` owns it.
+        assert w is not None
+        assert w.status == "done"
