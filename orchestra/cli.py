@@ -200,6 +200,27 @@ def dash(
     uvicorn.run("orchestra.web:app", host=host, port=port, log_level="info")
 
 
+@app.command("run")
+def run_command(
+    mission: Path = typer.Argument(..., metavar="MISSION_MD"),  # noqa: B008
+    model: str = typer.Option("opus", "--model"),
+    max_wallclock: float = typer.Option(5400.0, "--max-wallclock"),
+    max_activity: float = typer.Option(600.0, "--max-activity"),
+    allow_dirty: bool = typer.Option(False, "--allow-dirty"),
+) -> None:
+    """Spawn a PM with MISSION_MD and block until done or watchdog fires."""
+    from orchestra import run as run_mod  # local import keeps CLI startup cheap
+
+    rc = run_mod.run_mission(
+        mission,
+        model=model,
+        max_wallclock=max_wallclock,
+        max_activity=max_activity,
+        allow_dirty=allow_dirty,
+    )
+    raise typer.Exit(rc)
+
+
 # ---- worker subcommands ----
 
 def _worker_env() -> tuple[str, Path]:

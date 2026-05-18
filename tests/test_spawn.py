@@ -43,11 +43,6 @@ class TestHappyPath:
             state.record_event(conn_, "session_ready", worker_id=worker_id_)
             return True
         monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
-        # Stub _wait_first_status_via_event to inject turn_complete and return True.
-        def fake_wait_status(conn_, worker_id_):
-            state.record_event(conn_, "turn_complete", worker_id=worker_id_)
-            return True
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event", fake_wait_status)
 
         spawn.spawn_worker(
             conn,
@@ -78,7 +73,6 @@ class TestHappyPath:
     ):
         conn = _open(tmp_db)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event", lambda *a, **kw: True)
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **kw: True)
 
         spawn.spawn_worker(
@@ -106,7 +100,6 @@ class TestHappyPath:
     ):
         conn = _open(tmp_db)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event", lambda *a, **kw: True)
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **kw: True)
 
         worker_id = "o'brien"
@@ -137,16 +130,13 @@ class TestBootTimeout:
 
         The spawn flow must record spawn_stale_idle, set status=stale_spawn,
         AND still proceed to model switch + prompt injection (model_switched
-        event must be present). Status ends as stale_spawn because
-        _wait_first_status_via_event also times out.
+        event must be present). Because the final spawn_ok write at the end
+        of the flow flips status to working, that recovery is what we assert.
         """
         conn = _open(tmp_db)
         # No session_ready event will arrive → _wait_idle_via_event times out.
         monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 0.05)
         monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
-        # Also make _wait_first_status_via_event time out immediately.
-        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
 
         spawn.spawn_worker(
@@ -162,7 +152,9 @@ class TestBootTimeout:
 
         worker = state.get_worker(conn, "w1")
         assert worker is not None
-        assert worker.status == "stale_spawn"
+        # Final status is "working" because spawn_ok is written unconditionally
+        # at the end of the flow now that there is no second proof-of-life wait.
+        assert worker.status == "working"
         kinds = _kinds(conn, "w1")
         # Soft-timeout event recorded (not spawn_timeout):
         assert "spawn_stale_idle" in kinds
@@ -171,39 +163,8 @@ class TestBootTimeout:
         assert "model_switched" in kinds
         # Prompt injection was also attempted:
         assert "prompt_injected" in kinds
-
-
-class TestFirstStatusTimeout:
-    def test_marks_stale_spawn(
-        self, tmp_db, fake_tmux, monkeypatch
-    ):
-        conn = _open(tmp_db)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
-        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
-        # Make _wait_idle_via_event succeed instantly by injecting session_ready.
-        def fake_wait_idle(conn_, worker_id_, *, target=None):
-            state.record_event(conn_, "session_ready", worker_id=worker_id_)
-            return True
-        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
-        # No turn_complete event arrives → _wait_first_status_via_event times out.
-
-        spawn.spawn_worker(
-            conn,
-            worker_id="w1",
-            model="sonnet",
-            task="t",
-            project_root="/tmp/proj",
-            state_db=tmp_db,
-            ctx_files=[],
-            session_name="orch-proj",
-        )
-
-        worker = state.get_worker(conn, "w1")
-        assert worker is not None
-        assert worker.status == "stale_spawn"
-        kinds = _kinds(conn, "w1")
-        assert "spawn_first_status_timeout" in kinds
+        # And spawn_ok was recorded at the end:
+        assert "spawn_ok" in kinds
 
 
 class TestPromptInjectFailure:
@@ -251,8 +212,6 @@ class TestTrustPrompt:
         # Compress the wait loop timing so the test is fast.
         monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 2.0)
         monkeypatch.setattr(spawn, "BOOT_POLL_S", 0.01)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.05)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.01)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
 
         # Capture returns trust-prompt text the first time; then plain screen.
@@ -280,7 +239,6 @@ class TestTrustPrompt:
             return real_has_event(conn_, worker_id=worker_id, kind=kind)
 
         monkeypatch.setattr(spawn, "_has_event", patched_has_event)
-        # _wait_first_status_via_event → stale_spawn is fine for this test.
 
         spawn.spawn_worker(
             conn,
@@ -324,25 +282,54 @@ class TestEventDrivenWaits:
         monkeypatch.setattr(spawn, "BOOT_TIMEOUT_S", 1.0)
         assert spawn._wait_idle_via_event(conn, "w1") is True
 
-    def test_wait_first_status_uses_turn_complete(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        db = tmp_path / "state.db"
-        conn = state.connect(db)
-        state.init_schema(conn)
-        state.create_worker(
-            conn, id="w1", task="t", model="sonnet",
-            branch="orch/w1", pane_target="s:1",
+
+class TestSpawnFirstStatusRemoved:
+    """Issue #18: the first-status (turn_complete) proof-of-life wait was
+    removed because for engineers doing autonomous multi-step work, Stop only
+    fires once the whole task is done — minutes-to-hours after spawn. The
+    wait used to time out on a healthy worker and flip status to stale_spawn.
+    `session_ready` from SessionStart is now the sole proof-of-life signal.
+    """
+
+    def test_helper_is_gone(self) -> None:
+        assert not hasattr(spawn, "_wait_first_status_via_event")
+        assert not hasattr(spawn, "FIRST_STATUS_TIMEOUT_S")
+        assert not hasattr(spawn, "FIRST_STATUS_POLL_S")
+
+    def test_status_working_and_no_first_status_timeout_event(
+        self, tmp_db, tmp_orch_dir, fake_tmux, monkeypatch
+    ):
+        """End-to-end: with session_ready arriving and no turn_complete ever,
+        the worker still ends up status=working and there is no
+        spawn_first_status_timeout event."""
+        conn = _open(tmp_db)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        def fake_wait_idle(conn_, worker_id_, *, target=None):
+            state.record_event(conn_, "session_ready", worker_id=worker_id_)
+            return True
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="w1",
+            model="sonnet",
+            task="Long autonomous task",
+            project_root="/tmp/proj",
+            state_db=tmp_db,
+            ctx_files=[],
+            session_name="orch-proj",
         )
-        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 0.2)
-        monkeypatch.setattr(spawn, "FIRST_STATUS_POLL_S", 0.05)
-        # Cooperative `status` from worker_status command must NOT count.
-        state.record_event(conn, "status", worker_id="w1")
-        assert spawn._wait_first_status_via_event(conn, "w1") is False
-        # turn_complete must count.
-        state.record_event(conn, "turn_complete", worker_id="w1")
-        monkeypatch.setattr(spawn, "FIRST_STATUS_TIMEOUT_S", 1.0)
-        assert spawn._wait_first_status_via_event(conn, "w1") is True
+
+        worker = state.get_worker(conn, "w1")
+        assert worker is not None
+        assert worker.status == "working"
+
+        kinds = _kinds(conn, "w1")
+        assert "spawn_ok" in kinds
+        assert "spawn_first_status_timeout" not in kinds, (
+            "the first-status timeout event should never be recorded anymore"
+        )
 
 
 class TestWorktreeFailure:
@@ -416,8 +403,6 @@ class TestSpawnRoleSwitching:
         ]:
             monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
-                            lambda *a, **k: True)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
         db = tmp_path / "state.db"
         conn = state.connect(db)
@@ -451,8 +436,6 @@ class TestSpawnRoleSwitching:
         ]:
             monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
-                            lambda *a, **k: True)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
         db = tmp_path / "state.db"
         conn = state.connect(db)
@@ -486,8 +469,6 @@ class TestSpawnRoleSwitching:
         ]:
             monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
-                            lambda *a, **k: True)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
         db = tmp_path / "state.db"
         conn = state.connect(db)
@@ -512,8 +493,6 @@ class TestSpawnRoleSwitching:
         ]:
             monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
-                            lambda *a, **k: True)
         monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
         db = tmp_path / "state.db"
         conn = state.connect(db)
@@ -532,27 +511,21 @@ class TestSpawnConnectionLifetime:
     def test_wait_helpers_receive_fresh_connection_not_callers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """spawn_worker must not hold the caller's conn across the blocking waits.
+        """spawn_worker must not hold the caller's conn across the blocking wait.
 
-        Verified by monkeypatching the two wait helpers to capture whatever
-        conn they receive, then asserting it is NOT the same object as the
+        Verified by monkeypatching _wait_idle_via_event to capture whatever
+        conn it receives, then asserting it is NOT the same object as the
         conn the caller passed in. A fresh short-lived connection is used
-        internally so the caller's conn is freed during ~60-90s of waiting.
+        internally so the caller's conn is freed during the up-to-60s wait.
         """
-        captured: dict[str, sqlite3.Connection | None] = {"idle": None, "first": None}
+        captured: dict[str, sqlite3.Connection | None] = {"idle": None}
 
         def fake_wait_idle(conn_, worker_id_, *, target=None):
             captured["idle"] = conn_
             state.record_event(conn_, "session_ready", worker_id=worker_id_)
             return True
 
-        def fake_wait_first(conn_, worker_id_):
-            captured["first"] = conn_
-            state.record_event(conn_, "turn_complete", worker_id=worker_id_)
-            return True
-
         monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event", fake_wait_first)
         for fn, retval in [
             ("ensure_session", None), ("new_window", "s:w1"),
             ("send_literal", None), ("send_enter", None),
@@ -573,12 +546,8 @@ class TestSpawnConnectionLifetime:
         )
 
         assert captured["idle"] is not None
-        assert captured["first"] is not None
         assert captured["idle"] is not caller_conn, (
             "spawn_worker must not pass caller's conn to _wait_idle_via_event"
-        )
-        assert captured["first"] is not caller_conn, (
-            "spawn_worker must not pass caller's conn to _wait_first_status_via_event"
         )
 
     def test_caller_conn_still_sees_post_wait_writes(
@@ -587,8 +556,6 @@ class TestSpawnConnectionLifetime:
         """Post-wait events written via the internal conn must be visible
         on the caller's conn (WAL + autocommit = shared visibility)."""
         monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
-        monkeypatch.setattr(spawn, "_wait_first_status_via_event",
-                            lambda *a, **k: True)
         for fn, retval in [
             ("ensure_session", None), ("new_window", "s:w1"),
             ("send_literal", None), ("send_enter", None),

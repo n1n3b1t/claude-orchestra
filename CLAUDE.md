@@ -10,21 +10,23 @@ The thesis: a sufficiently capable Opus PM, given a few CLI primitives, can coor
 
 ## Setup + common commands
 
+> **Always use `.venv/bin/pytest` and `.venv/bin/mypy`** — your shell's `pytest` may resolve to system Python which lacks the dev deps.
+
 ```bash
 pip install -e ".[dev]"
 
 # Tests. test_web.py currently can't be collected (sse-starlette is declared
 # but the install order can miss it; see v1.2 issue #9). Use --ignore for now.
-pytest -v --ignore=tests/test_web.py
+.venv/bin/pytest -v --ignore=tests/test_web.py
 
 # Single test
-pytest tests/test_spawn.py::TestEventDrivenWaits::test_wait_idle_returns_true_when_session_ready_event_arrives -v
+.venv/bin/pytest tests/test_spawn.py::TestEventDrivenWaits::test_wait_idle_returns_true_when_session_ready_event_arrives -v
 
 # Lint + type check. Two modules are strict-mypy (state.py, tmux.py); others
 # are loose-mypy. The ruff selectors are E,F,I,B,UP,SIM at 100-col line length.
-ruff check orchestra/ tests/
-mypy orchestra/state.py orchestra/tmux.py    # strict modules
-mypy orchestra/                              # rest
+.venv/bin/ruff check orchestra/ tests/
+.venv/bin/mypy orchestra/state.py orchestra/tmux.py    # strict modules
+.venv/bin/mypy orchestra/                              # rest
 
 # Run orchestra against a project (this repo or any other):
 orchestra init                                # creates .orchestra/ + merges .claude/settings.local.json
