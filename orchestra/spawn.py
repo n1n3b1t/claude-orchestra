@@ -1,10 +1,11 @@
 """Worker spawn choreography (v1).
 
 v1 changes vs v0:
-- The two polling waits (_wait_idle, _wait_first_status) are replaced by
-  hook-event waits: spawn watches state.db for session_ready and
-  turn_complete events for the worker_id, max BOOT_TIMEOUT_S /
-  FIRST_STATUS_TIMEOUT_S seconds.
+- The polling wait `_wait_idle` is replaced by a hook-event wait: spawn
+  watches state.db for the `session_ready` event for the worker_id, max
+  BOOT_TIMEOUT_S seconds. `session_ready` is the sole proof-of-life signal —
+  there is no second wait on `turn_complete`, because for engineers doing
+  autonomous multi-step work, `Stop` only fires when the whole task is done.
 - The trust-prompt dismissal still runs in parallel (capture-pane based)
   because it fires BEFORE Claude reaches the point of emitting SessionStart.
 - New kwargs: role ('engineer'|'pm'|None), brief (markdown body for
@@ -15,7 +16,7 @@ v1 changes vs v0:
 - When role is set, role_prompts.render_pm_prompt /
   render_engineer_prompt is used instead of the v0 single-role template.
 
-Seven steps:
+Six steps:
   1. (optional) worktree creation                    + event worktree_created
   2. state.create_worker  (row, status="spawning")   + event spawn_start
   3. ensure_session + new_window                     + event spawn_window
@@ -24,7 +25,7 @@ Seven steps:
      trust-prompt dismissal runs in parallel (capture-pane)
   6. send_literal("/<model>") + send_enter           + event model_switched
   7. send_multiline(startup_prompt) with 1 retry     + event prompt_injected / failed
-  8. wait for first turn_complete event              + spawn_ok / spawn_first_status_timeout
+     followed by `spawn_ok` and status=working.
 """
 from __future__ import annotations
 
@@ -40,8 +41,6 @@ from orchestra import worktree as worktree_mod
 # Timeouts are module-level so tests can monkeypatch them.
 BOOT_TIMEOUT_S = 60
 BOOT_POLL_S = 1.0
-FIRST_STATUS_TIMEOUT_S = 90
-FIRST_STATUS_POLL_S = 1.0
 
 
 def _boot_command(worker_id: str, state_db: Path) -> str:
@@ -97,22 +96,6 @@ def _wait_idle_via_event(
                 time.sleep(BOOT_POLL_S)
                 continue
         time.sleep(BOOT_POLL_S)
-    return False
-
-
-def _wait_first_status_via_event(
-    conn: sqlite3.Connection, worker_id: str
-) -> bool:
-    """Block until the first turn_complete event for worker_id, max FIRST_STATUS_TIMEOUT_S.
-
-    NOTE: deliberately does NOT match ``status`` events (those are cooperative
-    worker-status writes from v0). Only hook-emitted ``turn_complete`` events count.
-    """
-    deadline = monotonic() + FIRST_STATUS_TIMEOUT_S
-    while monotonic() < deadline:
-        if _has_event(conn, worker_id=worker_id, kind="turn_complete"):
-            return True
-        time.sleep(FIRST_STATUS_POLL_S)
     return False
 
 
@@ -211,11 +194,11 @@ def spawn_worker(
     tmux.send_literal(target, boot_cmd)
     tmux.send_enter(target)
 
-    # Switch to a fresh short-lived connection for the blocking wait windows
+    # Switch to a fresh short-lived connection for the blocking wait window
     # and post-wait writes. The caller's `conn` is intentionally not held
-    # across the ~60-90s of waiting in _wait_idle_via_event /
-    # _wait_first_status_via_event — keeps spawn_worker from pinning the
-    # caller's connection during long blocking poll loops.
+    # across the up-to-BOOT_TIMEOUT_S wait in _wait_idle_via_event — keeps
+    # spawn_worker from pinning the caller's connection during long blocking
+    # poll loops.
     wait_conn = state.connect(state_db)
     try:
         # Step 4: wait for SessionStart hook (session_ready event). Trust-prompt
@@ -228,7 +211,8 @@ def spawn_worker(
             )
             state.update_worker(wait_conn, worker_id, status="stale_spawn")
             # Continue anyway — Claude may still come up; PM can send a kickoff
-            # message if needed. The first-status wait below still applies.
+            # message if needed. The final spawn_ok write below will flip
+            # status to working if the rest of the flow succeeds.
         else:
             state.record_event(wait_conn, "spawn_idle", worker_id=worker_id)
 
@@ -265,14 +249,8 @@ def spawn_worker(
             return
         state.record_event(wait_conn, "prompt_injected", worker_id=worker_id)
 
-        # Step 7: wait for first turn_complete event (proof of life).
-        if _wait_first_status_via_event(wait_conn, worker_id):
-            state.record_event(wait_conn, "spawn_ok", worker_id=worker_id)
-            state.update_worker(wait_conn, worker_id, status="working")
-        else:
-            state.update_worker(wait_conn, worker_id, status="stale_spawn")
-            state.record_event(
-                wait_conn, "spawn_first_status_timeout", worker_id=worker_id,
-            )
+        # Step 7: session_ready already fired (step 5); no second proof-of-life wait.
+        state.record_event(wait_conn, "spawn_ok", worker_id=worker_id)
+        state.update_worker(wait_conn, worker_id, status="working")
     finally:
         wait_conn.close()

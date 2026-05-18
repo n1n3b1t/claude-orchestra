@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3 (in progress)
+
+- Fix: `orchestra spawn` no longer waits for the first `turn_complete`
+  (Stop) event as a proof-of-life signal. `session_ready` from
+  `SessionStart` is the sole proof-of-life. Issue #18.
+
 ## v1.0 — 2026-05-18
 
 **The v1 thesis is validated.** A PM agent (Opus) and two engineer agents (Sonnet) autonomously built a working FastAPI URL-shortener web app — backend, frontend, tests — without any human-in-the-loop coordination. The PM mediated the API contract between the engineers, merged their work, ran the verifier, and reported done. Total wall-clock: ~8 minutes.
