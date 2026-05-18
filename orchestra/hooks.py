@@ -77,25 +77,86 @@ def run_spike(event: str, *, stdin_text: str) -> int:
 
 # --- Typed dispatch (Task 2) ---
 
-def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:
-    """Pull token counts out of a Stop-hook payload.
+def _zero_usage() -> dict[str, int]:
+    return {"input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_creation_tokens": 0}
 
-    Claude Code's exact field names live in docs/hook-schemas.md; this
-    function tolerates the two known shapes (top-level vs nested under
-    `usage`). Missing fields default to 0 — never raises.
 
-    NOTE: Field names verified by inspecting hook-debug.log; update if Stop
-    payload schema differs from {'usage': {...}}.
-    """
-    usage = payload.get("usage") if isinstance(payload, dict) else None
-    if not isinstance(usage, dict):
-        usage = payload if isinstance(payload, dict) else {}
+def _usage_from_dict(usage: dict[str, Any]) -> dict[str, int]:
     return {
         "input_tokens": int(usage.get("input_tokens", 0) or 0),
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
         "cache_read_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
         "cache_creation_tokens": int(usage.get("cache_creation_input_tokens", 0) or 0),
     }
+
+
+def _usage_from_transcript(transcript_path: str) -> dict[str, int] | None:
+    """Stream a Claude Code transcript JSONL and return the LAST assistant
+    turn's usage. Returns None if the file is missing/unreadable or has no
+    assistant-with-usage lines, so callers can fall back to zeros.
+
+    Claude Code writes cumulative usage on the final assistant message of
+    each turn, so the last `message.usage` line is the right one to bill.
+    """
+    p = Path(transcript_path)
+    if not p.is_file():
+        return None
+    last_usage: dict[str, Any] | None = None
+    try:
+        with p.open() as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                msg = entry.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                # Only assistant messages carry usage worth billing.
+                if entry.get("type") != "assistant" and msg.get("role") != "assistant":
+                    continue
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    last_usage = usage
+    except OSError:
+        return None
+    if last_usage is None:
+        return None
+    return _usage_from_dict(last_usage)
+
+
+def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:
+    """Pull token counts out of a Stop-hook payload.
+
+    Claude Code's Stop payload does not embed usage directly; it carries
+    `transcript_path`, an absolute path to a JSONL transcript whose last
+    assistant line holds the cumulative usage for the turn. We try that
+    first, then fall back to the legacy direct-`usage` shape used by older
+    fixtures, then to zeros. Never raises — hook handlers MUST exit 0.
+    """
+    if not isinstance(payload, dict):
+        return _zero_usage()
+    transcript_path = payload.get("transcript_path")
+    if isinstance(transcript_path, str) and transcript_path:
+        usage = _usage_from_transcript(transcript_path)
+        if usage is not None:
+            return usage
+    usage_field = payload.get("usage")
+    if isinstance(usage_field, dict):
+        return _usage_from_dict(usage_field)
+    # Legacy shape: token fields top-level on the payload itself.
+    if any(k in payload for k in (
+        "input_tokens", "output_tokens",
+        "cache_read_input_tokens", "cache_creation_input_tokens",
+    )):
+        return _usage_from_dict(payload)
+    return _zero_usage()
 
 
 def _handle(event: str, payload: dict[str, Any], conn: Any, wid: str) -> None:
