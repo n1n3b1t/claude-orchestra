@@ -298,7 +298,11 @@ def answer_command(
 ) -> None:
     """Resolve an escalation and send the answer to the asker's pane."""
     with _open_db() as conn:
-        esc = state.resolve_escalation(conn, escalation_id, answer=answer)
+        try:
+            esc = state.resolve_escalation(conn, escalation_id, answer=answer)
+        except KeyError:
+            typer.echo(f"no open escalation #{escalation_id}", err=True)
+            raise typer.Exit(2) from None
         w = state.get_worker(conn, esc.worker_id)
         if w is not None:
             tmux.send_multiline(w.pane_target, f"[answer to #{esc.id}] {answer}")
