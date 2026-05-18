@@ -36,8 +36,9 @@ mkdir -p "$PROJECT_DIR"
   && mkdir -p docs examples/kanban \
   && cp "$REPO_ROOT/examples/kanban/verifier.sh" examples/kanban/verifier.sh \
   && chmod +x examples/kanban/verifier.sh \
-  && git add examples/kanban/verifier.sh \
-  && git commit -q -m "seed: kanban verifier" )
+  && printf '.orchestra/\nworktrees/\n' > .gitignore \
+  && git add examples/kanban/verifier.sh .gitignore \
+  && git commit -q -m "seed: kanban verifier + .gitignore" )
 
 ( cd "$PROJECT_DIR" && "$REPO_ROOT/.venv/bin/orchestra" init )
 
