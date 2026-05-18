@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from time import monotonic
 
-from orchestra import prompts, role_prompts, state, tmux
+from orchestra import prompts, role_prompts, settings_merge, state, tmux
 from orchestra import worktree as worktree_mod
 
 # Timeouts are module-level so tests can monkeypatch them.
@@ -183,6 +183,28 @@ def spawn_worker(
             )
             state.update_worker(conn, worker_id, status="error")
             return
+
+    # v2.0: load role file & merge per-role permissions before opening the window.
+    if role is not None:
+        try:
+            _, role_perms = role_prompts._load_role(role, project_root=Path(project_root))
+        except role_prompts.RoleNotFoundError as e:
+            state.record_event(
+                conn, "role_load_failed", worker_id=worker_id, error=str(e),
+            )
+            state.update_worker(conn, worker_id, status="error")
+            return
+        if role_perms:
+            if worktree_name is not None:
+                settings_path = (
+                    Path(project_root) / "worktrees" / worktree_name
+                    / ".claude" / "settings.local.json"
+                )
+            else:
+                settings_path = (
+                    Path(project_root) / ".claude" / "settings.local.json"
+                )
+            settings_merge.ensure_perms(settings_path, role_perms)
 
     # Step 2: tmux session + window
     tmux.ensure_session(session_name, cwd=cwd)

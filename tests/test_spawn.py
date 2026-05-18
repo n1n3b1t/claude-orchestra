@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import sqlite3
 from pathlib import Path
@@ -580,3 +581,152 @@ class TestSpawnConnectionLifetime:
         worker = state.get_worker(caller_conn, "w1")
         assert worker is not None
         assert worker.status == "working"
+
+
+class TestPermissionsWiring:
+    def test_role_with_permissions_writes_settings_when_worktree_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Engineer with a role file carrying permissions gets those perms
+        merged into <worktree>/.claude/settings.local.json before tmux opens."""
+        from orchestra import spawn, state
+        # Set up project root with a custom role file
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        roles = project_root / ".orchestra" / "roles"
+        roles.mkdir(parents=True)
+        (roles / "reviewer.md").write_text(
+            "---\n"
+            "permissions:\n"
+            "  allow:\n"
+            "    - Read\n"
+            "  deny:\n"
+            "    - Write\n"
+            "---\n"
+            "## ROLE: Reviewer\nWorker ID: {worker_id}\nWorkspace: {cwd}\n"
+            "Branch: {branch}\n{brief_section}"
+        )
+        # Patch the side-effectful parts of spawn
+        monkeypatch.setattr(spawn.tmux, "ensure_session", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "new_window", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "send_literal", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "send_enter", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "send_multiline", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "capture", lambda *a, **k: "")
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn.worktree_mod, "add", lambda *a, **k: None)
+
+        db = project_root / ".orchestra" / "state.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = state.connect(db)
+        state.init_schema(conn)
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="rev",
+            model="sonnet",
+            task="",
+            project_root=str(project_root),
+            state_db=db,
+            ctx_files=[],
+            session_name="orch-test",
+            role="reviewer",
+            brief=None,
+            worktree_name="rev",
+        )
+
+        target = project_root / "worktrees" / "rev" / ".claude" / "settings.local.json"
+        assert target.is_file()
+        data = json.loads(target.read_text())
+        assert data["permissions"]["allow"] == ["Read"]
+        assert data["permissions"]["deny"] == ["Write"]
+
+    def test_role_without_worktree_writes_to_main_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A no-worktree reviewer-style spawn writes perms into
+        <project_root>/.claude/settings.local.json (main checkout)."""
+        from orchestra import spawn, state
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        roles = project_root / ".orchestra" / "roles"
+        roles.mkdir(parents=True)
+        (roles / "reviewer.md").write_text(
+            "---\n"
+            "permissions:\n"
+            "  allow:\n"
+            "    - Read\n"
+            "---\n"
+            "## ROLE: Reviewer\nWorker ID: {worker_id}\nWorkspace: {cwd}\n"
+            "Branch: {branch}\n{brief_section}"
+        )
+        monkeypatch.setattr(spawn.tmux, "ensure_session", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "new_window", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "send_literal", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "send_enter", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "send_multiline", lambda *a, **k: None)
+        monkeypatch.setattr(spawn.tmux, "capture", lambda *a, **k: "")
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+
+        db = project_root / ".orchestra" / "state.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = state.connect(db)
+        state.init_schema(conn)
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="rev",
+            model="sonnet",
+            task="",
+            project_root=str(project_root),
+            state_db=db,
+            ctx_files=[],
+            session_name="orch-test",
+            role="reviewer",
+            brief=None,
+            worktree_name=None,
+        )
+
+        target = project_root / ".claude" / "settings.local.json"
+        assert target.is_file()
+        data = json.loads(target.read_text())
+        assert data["permissions"]["allow"] == ["Read"]
+
+    def test_missing_role_marks_worker_error_and_skips_window(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orchestra import spawn, state
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        new_window_called = {"v": False}
+        monkeypatch.setattr(spawn.tmux, "ensure_session", lambda *a, **k: None)
+
+        def _new_window(*a: object, **k: object) -> None:
+            new_window_called["v"] = True
+
+        monkeypatch.setattr(spawn.tmux, "new_window", _new_window)
+
+        db = project_root / ".orchestra" / "state.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = state.connect(db)
+        state.init_schema(conn)
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="ghost",
+            model="sonnet",
+            task="",
+            project_root=str(project_root),
+            state_db=db,
+            ctx_files=[],
+            session_name="orch-test",
+            role="ghost-role-that-does-not-exist",
+            brief=None,
+            worktree_name=None,
+        )
+
+        w = state.get_worker(conn, "ghost")
+        assert w is not None and w.status == "error"
+        kinds = [e.kind for e in state.list_events(conn, worker_id="ghost")]
+        assert "role_load_failed" in kinds
+        assert not new_window_called["v"]
