@@ -173,9 +173,12 @@ def status(worker: str | None = typer.Option(None, "--worker")) -> None:
             if not rows:
                 typer.echo("(no workers)")
                 return
+            from orchestra import poll as poll_mod  # avoid circular at import time
             for w in rows:
+                usd = poll_mod._cost_usd_for(conn, w.id, w.model)
+                msg = w.progress or ""
                 typer.echo(
-                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  {w.progress or ''}"
+                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  ${usd:>6.2f}  {msg}"
                 )
 
 
