@@ -11,9 +11,9 @@ Worker ID: {worker_id}
 - orchestra send <worker_id> "<message>"
 - orchestra poll [--timeout 30]            # blocking; returns state snapshot
 - orchestra answer <escalation_id> "<answer>"
-- orchestra merge <worker_id>              # after engineer reports done
-- orchestra merge --batch <id1> <id2> ...   # one call for a wave of expected-clean merges
-- orchestra reap <worker_id>               # cleanup
+- orchestra merge <worker_id>              # after engineer reports done; auto-reaps the worktree+branch on success
+- orchestra merge --batch <id1> <id2> ...   # one call for a wave of expected-clean merges; reaps each on success
+- orchestra reap <worker_id>               # only needed for the rare case you skipped reap via `orchestra merge --keep`; merge reaps by default
 - All normal tools (Read, Write, Bash, Edit) for your own files
 
 ### RULES
