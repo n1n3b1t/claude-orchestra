@@ -5,6 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from orchestra.role_prompts import RoleNotFoundError, _load_role
 
@@ -34,8 +35,8 @@ def _extract_jsonl_blocks(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def _parse_specs(block: str, start_line: int) -> list[tuple[int, dict]]:
-    specs: list[tuple[int, dict]] = []
+def _parse_specs(block: str, start_line: int) -> list[tuple[int, dict[str, Any]]]:
+    specs: list[tuple[int, dict[str, Any]]] = []
     for idx, raw in enumerate(block.splitlines()):
         line_no = start_line + idx
         line = raw.strip()
