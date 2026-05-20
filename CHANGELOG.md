@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.2 — DX quick wins (2026-05-20)
+
+Three small DX improvements identified by observing eight orchestrated runs (v1.2 dogfood → ws-scrcpy phase 1):
+
+- **`orchestra merge` reaps by default** (closes #28). Today the PM has to remember `orchestra reap` after every merge; 4 of 8 runs the PM forgot. Now reap-on-success is automatic; `--keep` preserves legacy behavior for inspection. `--batch` reaps each entry on its own success; on conflict in position N, reaps the successful 0…N-1 and leaves N intact.
+- **`orchestra status` shows live cost** (closes #29). New `orchestra/cost.py` (per-million-token rates + family regex, lifted from the e2e watchdog so there's one source of truth) and a `$X.XX` column in both `orchestra status` and `orchestra poll`'s snapshot. Surfaces "this run will cost $20" early.
+- **`orchestra mission lint <mission.md>`** (closes #30). New static pre-flight check: parses any inline JSONL `spawn-batch` blocks and verifies brief paths exist, role names resolve (override → bundled fallback), worktree names are unique, and the mission body has an `## ACCEPTANCE` / `## VERIFIER` section. Warnings for missing `## TEAM` heading and missing `worker_done` mention. `examples/kanban/mission.md` passes clean.
+
+**Tests:** 246 (up from 204 at v2.1 close). No new runtime deps.
+
+**Backward compatibility:** `orchestra merge` is now reap-by-default — scripts that called `orchestra reap <id>` separately keep working (idempotent if the worktree is already gone); use `--keep` if you need the old behavior. New `cost` column is human-output only; nothing parses these by column index in the codebase.
+
+**Proven via dogfood:** the v2.2 batch itself was orchestrated. All 3 engineers ran in parallel (`spawn-batch`), the hook daemon handled the event stream, the PM merged them via the v2.1 `merge --batch`. Independent run verifier was added post-PM (the `status`-output cost wiring) — the engineer wired cost into `poll.py::render_snapshot` (PM-facing) but missed the human-facing `cli.py::status` path; a small follow-up commit fixed it. Filed as a learning: "engineer reads issue text → engineer interprets one of two surfaces → other surface gets missed" — future missions should call out BOTH surfaces explicitly.
+
 ## v2.1 — agent-communication optimizations (2026-05-20)
 
 **Three independent primitives** that cut PM serial-coordination time on multi-engineer runs without changing any semantics. All stdlib-only.

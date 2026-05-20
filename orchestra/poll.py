@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from orchestra import cost as cost_mod
 from orchestra import state
 
 # Events that count as "interesting" for new-event counts and chatter.
@@ -69,6 +70,29 @@ def _new_event_count(
     return int(conn.execute(sql, args).fetchone()[0])
 
 
+def _cost_usd_for(conn: sqlite3.Connection, worker_id: str, fallback_model: str) -> float:
+    """Sum turn_complete token costs for a worker.
+
+    Per-turn payload model wins over the worker's spawn-time model so that
+    mid-run /model switches are billed at the right rate.
+    """
+    total = 0.0
+    rows = conn.execute(
+        "SELECT payload FROM events WHERE worker_id = ? AND kind = 'turn_complete'",
+        (worker_id,),
+    ).fetchall()
+    for (payload_raw,) in rows:
+        try:
+            p = json.loads(payload_raw) if payload_raw else {}
+        except Exception:  # noqa: BLE001
+            continue
+        inp = int(p.get("input_tokens") or 0)
+        out = int(p.get("output_tokens") or 0)
+        model_id = p.get("model") or fallback_model
+        total += cost_mod.cost_for(model_id, inp, out)
+    return total
+
+
 def _last_status_for(conn: sqlite3.Connection, worker_id: str) -> str | None:
     row = conn.execute(
         "SELECT payload FROM events WHERE worker_id = ? AND kind = 'status' "
@@ -89,12 +113,13 @@ def render_snapshot(db: Path, *, since_id: int, include_tools: bool = False) -> 
     try:
         engineers = _engineers(conn)
         lines: list[str] = []
-        lines.append("| worker | status | new events | last status |")
-        lines.append("|---|---|---|---|")
+        lines.append("| worker | status | new events | cost | last status |")
+        lines.append("|---|---|---|---|---|")
         for w in engineers:
             n = _new_event_count(conn, w.id, since_id, include_tools)
             last = _last_status_for(conn, w.id) or "(none)"
-            lines.append(f"| {w.id} | {w.status} | {n} | {last} |")
+            usd = _cost_usd_for(conn, w.id, w.model)
+            lines.append(f"| {w.id} | {w.status} | {n} | ${usd:>7.2f} | {last} |")
         escs = state.list_open_escalations(conn)
         if escs:
             lines.append("")

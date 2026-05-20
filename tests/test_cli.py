@@ -452,11 +452,17 @@ class TestMergeReap:
         _init_in(tmp_path, monkeypatch)
         # Stub the git call so the test stays hermetic.
         import subprocess as _sub
+
+        from orchestra import worktree as wt_mod
         calls: list = []
         def fake_run(argv, **kw):  # noqa: ANN001
             calls.append(argv)
             return _sub.CompletedProcess(argv, 0, stdout="", stderr="")
         monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: None,
+        )
         with cli._open_db() as conn:
             state.create_worker(
                 conn, id="backend", task="t", model="sonnet",
@@ -546,3 +552,180 @@ class TestMergeReap:
         # reap does not mutate worker status — cooperative `worker done` owns it.
         assert w is not None
         assert w.status == "done"
+
+
+class TestReapDefault:
+    """v2.2: `orchestra merge` auto-reaps the worktree+branch on success.
+    `--keep` opts out and preserves the legacy v2.1 behaviour."""
+
+    def _seed(self, wid: str) -> None:
+        with cli._open_db() as conn:
+            state.create_worker(
+                conn, id=wid, task="t", model="sonnet",
+                branch=f"orch/{wid}", pane_target=f"s:{wid}",
+                role="engineer", worktree=wid,
+            )
+
+    def test_merge_reaps_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        import subprocess as _sub
+
+        from orchestra import worktree as wt_mod
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda argv, **k: _sub.CompletedProcess(argv, 0, stdout="", stderr=""),
+        )
+        remove_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: remove_calls.append(
+                {"project_root": project_root, "name": name, "worker_id": worker_id}
+            ),
+        )
+        self._seed("backend")
+        result = runner.invoke(app, ["merge", "backend"])
+        assert result.exit_code == 0, result.output
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+        assert "merge_ok" in kinds
+        assert "worktree_reaped" in kinds
+        assert remove_calls == [
+            {"project_root": Path.cwd(), "name": "backend", "worker_id": "backend"},
+        ]
+
+    def test_merge_keeps_on_conflict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        import subprocess as _sub
+
+        from orchestra import worktree as wt_mod
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda argv, **k: _sub.CompletedProcess(
+                argv, 1, stdout="CONFLICT (content)", stderr="",
+            ),
+        )
+        remove_calls: list[str] = []
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: remove_calls.append(name),
+        )
+        self._seed("backend")
+        result = runner.invoke(app, ["merge", "backend"])
+        assert result.exit_code == 1
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+        assert "merge_conflict" in kinds
+        assert "worktree_reaped" not in kinds
+        assert remove_calls == []
+
+    def test_merge_batch_reaps_successes_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        import subprocess as _sub
+
+        from orchestra import worktree as wt_mod
+
+        def fake_run(argv, **kw):  # noqa: ANN001
+            # Second merge (orch/web) conflicts.
+            if "merge" in argv and "orch/web" in argv:
+                return _sub.CompletedProcess(
+                    argv, 1, stdout="CONFLICT", stderr="",
+                )
+            return _sub.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        remove_calls: list[str] = []
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: remove_calls.append(name),
+        )
+        for wid in ("backend", "web", "cli"):
+            self._seed(wid)
+        result = runner.invoke(
+            app, ["merge", "--batch", "backend", "web", "cli"],
+        )
+        # Any non-ok → exit 2 (existing batch contract).
+        assert result.exit_code == 2, result.output
+
+        # Only the 1st success was reaped; the conflict (web) is kept for
+        # inspection; the skipped one (cli) is untouched.
+        assert remove_calls == ["backend"]
+
+        with cli._open_db() as conn:
+            backend_kinds = [
+                e.kind for e in state.list_events(conn, worker_id="backend")
+            ]
+            web_kinds = [
+                e.kind for e in state.list_events(conn, worker_id="web")
+            ]
+            cli_kinds = [
+                e.kind for e in state.list_events(conn, worker_id="cli")
+            ]
+        assert "merge_ok" in backend_kinds
+        assert "worktree_reaped" in backend_kinds
+        assert "merge_conflict" in web_kinds
+        assert "worktree_reaped" not in web_kinds
+        # The skipped worker has no events of its own.
+        assert "merge_attempted" not in cli_kinds
+        assert "worktree_reaped" not in cli_kinds
+
+    def test_keep_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_in(tmp_path, monkeypatch)
+        import subprocess as _sub
+
+        from orchestra import worktree as wt_mod
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda argv, **k: _sub.CompletedProcess(argv, 0, stdout="", stderr=""),
+        )
+        remove_calls: list[str] = []
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: remove_calls.append(name),
+        )
+        self._seed("backend")
+        result = runner.invoke(app, ["merge", "backend", "--keep"])
+        assert result.exit_code == 0, result.output
+        with cli._open_db() as conn:
+            kinds = [e.kind for e in state.list_events(conn, worker_id="backend")]
+        assert "merge_ok" in kinds
+        assert "worktree_reaped" not in kinds
+        assert remove_calls == []
+
+    def test_keep_flag_batch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`--keep` also opts out of reaping in batch mode."""
+        _init_in(tmp_path, monkeypatch)
+        import subprocess as _sub
+
+        from orchestra import worktree as wt_mod
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda argv, **k: _sub.CompletedProcess(argv, 0, stdout="", stderr=""),
+        )
+        remove_calls: list[str] = []
+        monkeypatch.setattr(
+            wt_mod, "remove",
+            lambda project_root, *, name, worker_id: remove_calls.append(name),
+        )
+        for wid in ("backend", "web"):
+            self._seed(wid)
+        result = runner.invoke(
+            app, ["merge", "--batch", "--keep", "backend", "web"],
+        )
+        assert result.exit_code == 0, result.output
+        assert remove_calls == []
+        with cli._open_db() as conn:
+            backend_kinds = [
+                e.kind for e in state.list_events(conn, worker_id="backend")
+            ]
+        assert "merge_ok" in backend_kinds
+        assert "worktree_reaped" not in backend_kinds

@@ -173,9 +173,12 @@ def status(worker: str | None = typer.Option(None, "--worker")) -> None:
             if not rows:
                 typer.echo("(no workers)")
                 return
+            from orchestra import poll as poll_mod  # avoid circular at import time
             for w in rows:
+                usd = poll_mod._cost_usd_for(conn, w.id, w.model)
+                msg = w.progress or ""
                 typer.echo(
-                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  {w.progress or ''}"
+                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  ${usd:>6.2f}  {msg}"
                 )
 
 
@@ -252,6 +255,22 @@ def run_command(
         allow_dirty=allow_dirty,
     )
     raise typer.Exit(rc)
+
+
+@app.command("mission")
+def mission_command(
+    action: str = typer.Argument(..., metavar="ACTION", help="lint"),
+    path: Path = typer.Argument(..., metavar="MISSION_MD"),  # noqa: B008
+) -> None:
+    """Mission utilities. Today: `orchestra mission lint <path>`."""
+    if action != "lint":
+        typer.echo(f"unknown action: {action}", err=True)
+        raise typer.Exit(2)
+    from orchestra import mission_lint
+    findings = mission_lint.lint(path)
+    typer.echo(mission_lint.render(findings))
+    if mission_lint.has_errors(findings):
+        raise typer.Exit(2)
 
 
 # ---- worker subcommands ----
@@ -416,6 +435,22 @@ def poll_command(
     typer.echo(snapshot)
 
 
+def _reap(worker_id: str) -> bool:
+    """Remove the worker's worktree, delete its branch, record the event.
+
+    Returns True if the worker had a worktree to reap, False otherwise.
+    """
+    from orchestra import worktree as wt_mod
+    with _open_db() as conn:
+        w = state.get_worker(conn, worker_id)
+        if w is None or w.worktree is None:
+            return False
+        wt_mod.remove(Path.cwd(), name=w.worktree, worker_id=worker_id)
+        state.record_event(conn, "worktree_reaped", worker_id=worker_id,
+                           name=w.worktree)
+        return True
+
+
 @app.command("merge")
 def merge_command(
     ids: Annotated[list[str] | None, typer.Argument(metavar="ID...")] = None,
@@ -427,16 +462,29 @@ def merge_command(
                  "aborts on first conflict.",
         ),
     ] = False,
+    keep: Annotated[
+        bool,
+        typer.Option(
+            "--keep",
+            help="Keep worktree + branch after merge (legacy v2.1 behavior). "
+                 "Default since v2.2 is to auto-reap on success.",
+        ),
+    ] = False,
 ) -> None:
-    """Merge orch/<worker_id> into the current branch.
+    """Merge orch/<worker_id> into the current branch and reap on success.
 
-    Single-arg form: ``orchestra merge backend`` — unchanged behaviour, echoes a
-    human-readable line, exits 1 on conflict.
+    Single-arg form: ``orchestra merge backend`` — on success the worktree +
+    branch are reaped; on conflict, the worktree is kept for inspection and the
+    command exits 1.
 
     Batch form: ``orchestra merge --batch backend web cli`` — merges each in
-    order in-process. On the first conflict, aborts the in-progress merge and
-    SKIPS remaining ids (no events recorded for skipped ids). Emits JSON to
-    stdout; exits 2 on any non-clean result.
+    order in-process. After each successful merge, that worker is reaped.
+    On a conflict at position N, positions 0..N-1 (already merged) are reaped,
+    N is kept for inspection, and N+1..M are skipped. Emits JSON; exits 2 on
+    any non-clean result.
+
+    ``--keep`` preserves the legacy v2.1 behavior of leaving the worktree +
+    branch intact after a successful merge.
     """
     if not ids:
         typer.echo("error: provide an ID or --batch <id1> <id2> ...", err=True)
@@ -471,10 +519,13 @@ def merge_command(
                 )
                 typer.echo(f"merge conflict on {branch}", err=True)
                 raise typer.Exit(1)
+        if not keep:
+            _reap(wid)
         return
 
     results: list[dict[str, str]] = []
     aborted = False
+    reaped_ok: list[str] = []
     with _open_db() as conn:
         for wid in ids:
             if aborted:
@@ -490,6 +541,7 @@ def merge_command(
                 state.record_event(conn, "merge_ok", worker_id=wid,
                                    stdout=proc.stdout[-2000:])
                 results.append({"id": wid, "status": "ok"})
+                reaped_ok.append(wid)
             else:
                 summary = (proc.stdout + proc.stderr)[:500]
                 state.record_event(
@@ -502,6 +554,9 @@ def merge_command(
                     capture_output=True,
                 )
                 aborted = True
+    if not keep:
+        for wid in reaped_ok:
+            _reap(wid)
     typer.echo(json.dumps(results, indent=2))
     if any(r["status"] != "ok" for r in results):
         raise typer.Exit(2)
@@ -512,12 +567,6 @@ def reap_command(
     worker_id: str = typer.Argument(..., metavar="ID"),
 ) -> None:
     """Remove the worker's worktree and delete its branch."""
-    from orchestra import worktree as wt_mod
-    with _open_db() as conn:
-        w = state.get_worker(conn, worker_id)
-        if w is None or w.worktree is None:
-            typer.echo(f"worker {worker_id} has no worktree", err=True)
-            raise typer.Exit(2)
-        wt_mod.remove(Path.cwd(), name=w.worktree, worker_id=worker_id)
-        state.record_event(conn, "worktree_reaped", worker_id=worker_id,
-                           name=w.worktree)
+    if not _reap(worker_id):
+        typer.echo(f"worker {worker_id} has no worktree", err=True)
+        raise typer.Exit(2)
