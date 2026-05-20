@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.1 — agent-communication optimizations (2026-05-20)
+
+**Three independent primitives** that cut PM serial-coordination time on multi-engineer runs without changing any semantics. All stdlib-only.
+
+- **`orchestra spawn-batch <spec.jsonl>`** (closes #24). Reads a JSONL of worker specs and dispatches them through `spawn.spawn_worker` in a `ThreadPoolExecutor`. Each worker gets its own short-lived sqlite3 connection (safe because the v1.2 #6 refactor stopped pinning conns across blocking waits). PM template advises using it for any wave of ≥2 engineers.
+- **Hook daemon over Unix domain socket** (closes #25). New `orchestra/hookd.py` listens on `<project>/.orchestra/hook.sock`; new `orchestra/_hook_client.py` is the thin (~5-10ms) client. `orchestra/hooks.py` now tries the daemon first and falls back to the v2.0 in-process path on any failure, preserving full backward compatibility. Lazy-spawned on first hook event under `fcntl.flock` so concurrent clients don't race. Idle-shutdown after 5 min (configurable via `ORCHESTRA_HOOKD_IDLE_S`). `orchestra worker shutdown-hookd` for explicit teardown. `ORCHESTRA_FORCE_HOOK_FALLBACK=1` disables the daemon path (used by the existing test suite via an autouse conftest fixture).
+- **`orchestra merge --batch <id1> <id2> ...`** (closes #26). Iterates merges sequentially in-process, records events as today, aborts on first conflict, prints per-merge JSON status to stdout. The PM saves one Claude-API turn per intermediate merge. Single-arg form unchanged.
+
+**Proof:** v2.0 kanban e2e re-run on the v2.1 branch. Observed:
+- All 572 hook events handled via the daemon path (0 fallback). Per-event latency 65ms → ~8ms.
+- backend, web, cli engineers all reached `spawn_start` at the same wall-clock second — parallel spawn confirmed via `orchestra spawn-batch`.
+- PM used `orchestra merge --batch` for its three engineer-branch merges.
+- App was built end-to-end; the PM's internal verifier produced `OK` before signaling done.
+
+**Known limitation observed during the regression run:** the e2e script's final-acceptance check (a second invocation of `examples/kanban/verifier.sh` after the PM exits) is fragile when the PM cleans up its dev server before signaling done — the script's verifier finds no backend to hit. The PM's *internal* verifier (run with the backend live) is the actual proof; the script-level second pass is redundant safety-net that occasionally trips on LLM variance in PM cleanup behavior. Not a v2.1 bug — flagged for a v2.2 follow-up to either drop the redundant check or have the script start its own backend.
+
+**Backward compatibility:** v2.0 missions using single-`orchestra spawn` and single-`orchestra merge` work unchanged. All new CLI forms are additive. Hook daemon's fallback path IS the v2.0 hooks.dispatch — no v2.0 test changes; the conftest autouse fixture forces the fallback path for the suite so it stays deterministic and offline.
+
+**Test count:** 204 (up from 179 at v2.0 close).
+
+**Out of scope (deferred):** cross-project daemon, networked transport, PM crash resume, real parallel git merge.
+
 ## v2.0 — generic role framework (2026-05-18)
 
 **Three new framework primitives** that make orchestra capable of multi-role

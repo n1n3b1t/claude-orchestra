@@ -6,11 +6,13 @@ Worker ID: {worker_id}
 {mission}
 
 {team_section}### TOOLS YOU CAN USE
+- orchestra spawn-batch <spec.jsonl>  # parallel spawn for any wave of >=2 engineers (preferred over sequential `orchestra spawn`)
 - orchestra spawn <id> <model> --role engineer --brief <path> --worktree <name>
 - orchestra send <worker_id> "<message>"
 - orchestra poll [--timeout 30]            # blocking; returns state snapshot
 - orchestra answer <escalation_id> "<answer>"
 - orchestra merge <worker_id>              # after engineer reports done
+- orchestra merge --batch <id1> <id2> ...   # one call for a wave of expected-clean merges
 - orchestra reap <worker_id>               # cleanup
 - All normal tools (Read, Write, Bash, Edit) for your own files
 
