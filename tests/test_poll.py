@@ -58,6 +58,52 @@ class TestSnapshot:
         line = next(ln for ln in out.splitlines() if "backend" in ln)
         assert "1" in line
 
+    def test_cost_column_header_present(self, tmp_db: Path) -> None:
+        _setup(tmp_db)
+        out = poll.render_snapshot(tmp_db, since_id=0)
+        # Header row exposes the new column.
+        assert "cost" in out.splitlines()[0]
+        # Zero-cost rendering still shows a `$` prefix so columns align.
+        for engineer in ("backend", "frontend"):
+            line = next(ln for ln in out.splitlines() if engineer in ln)
+            assert "$" in line
+
+    def test_cost_column_differs_per_worker(self, tmp_db: Path) -> None:
+        """Two workers with different turn_complete token totals → different $."""
+        _setup(tmp_db)
+        conn = state.connect(tmp_db)
+        # backend: 1M output tokens → sonnet $15/M out → $15.00
+        state.record_event(
+            conn, "turn_complete", worker_id="backend",
+            input_tokens=0, output_tokens=1_000_000,
+        )
+        # frontend: 1M input tokens → sonnet $3/M in → $3.00
+        state.record_event(
+            conn, "turn_complete", worker_id="frontend",
+            input_tokens=1_000_000, output_tokens=0,
+        )
+        conn.close()
+        out = poll.render_snapshot(tmp_db, since_id=0)
+        backend_line = next(ln for ln in out.splitlines() if "backend" in ln)
+        frontend_line = next(ln for ln in out.splitlines() if "frontend" in ln)
+        assert "$  15.00" in backend_line
+        assert "$   3.00" in frontend_line
+
+    def test_cost_payload_model_overrides_worker_model(self, tmp_db: Path) -> None:
+        """turn_complete payload `model` should win over the workers.model column."""
+        _setup(tmp_db)  # both workers are sonnet
+        conn = state.connect(tmp_db)
+        # Force opus rate via the per-turn payload model.
+        state.record_event(
+            conn, "turn_complete", worker_id="backend",
+            input_tokens=1_000_000, output_tokens=0, model="claude-opus-4-7",
+        )
+        conn.close()
+        out = poll.render_snapshot(tmp_db, since_id=0)
+        backend_line = next(ln for ln in out.splitlines() if "backend" in ln)
+        # opus input rate is $15/M, not sonnet's $3/M.
+        assert "$  15.00" in backend_line
+
     def test_pending_escalations_listed(self, tmp_db: Path) -> None:
         _setup(tmp_db)
         conn = state.connect(tmp_db)
