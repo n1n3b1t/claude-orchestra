@@ -6,6 +6,7 @@ Worker ID: {worker_id}
 {mission}
 
 {team_section}### TOOLS YOU CAN USE
+- orchestra spawn-batch <spec.jsonl>  # parallel spawn for any wave of >=2 engineers (preferred over sequential `orchestra spawn`)
 - orchestra spawn <id> <model> --role engineer --brief <path> --worktree <name>
 - orchestra send <worker_id> "<message>"
 - orchestra poll [--timeout 30]            # blocking; returns state snapshot
