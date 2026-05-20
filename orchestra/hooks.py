@@ -224,15 +224,40 @@ def dispatch(event: str, *, stdin_text: str) -> int:
     except json.JSONDecodeError:
         payload = {"_parse_error": True, "_raw": stdin_text}
 
+    # v2.1 fast path: hand the event to the per-project daemon over UDS.
+    # ORCHESTRA_FORCE_HOOK_FALLBACK=1 disables this (used by the test suite
+    # and as an emergency kill-switch in production).
+    if os.environ.get("ORCHESTRA_FORCE_HOOK_FALLBACK") != "1":
+        try:
+            from orchestra import _hook_client
+            orch_dir = db.parent
+            if _hook_client.ensure_daemon_and_send(
+                sock_path=orch_dir / "hook.sock",
+                pid_path=orch_dir / "hookd.pid",
+                lock_path=orch_dir / "hookd.lock",
+                state_db=db,
+                event=event,
+                worker_id=wid,
+                payload=payload,
+            ):
+                _append_log(
+                    "hook-debug.log",
+                    json.dumps({"ts": _now(), "event": event, "worker_id": wid,
+                                "payload": payload, "_via": "daemon"}),
+                )
+                return 0
+        except Exception:  # noqa: BLE001 — fall through to the in-process path
+            pass
+
+    # Fallback: in-process path (unchanged from v2.0).
     conn = None
     try:
         conn = state.connect(db)
         _handle(event, payload, conn, wid)
-        # Temporary diagnostic: append raw payload so we can verify the Stop-hook
-        # payload schema from real runs. Remove once _extract_token_usage is confirmed.
         _append_log(
             "hook-debug.log",
-            json.dumps({"ts": _now(), "event": event, "worker_id": wid, "payload": payload}),
+            json.dumps({"ts": _now(), "event": event, "worker_id": wid,
+                        "payload": payload, "_via": "inproc"}),
         )
     except Exception:  # noqa: BLE001 — never break the turn
         tb = traceback.format_exc()

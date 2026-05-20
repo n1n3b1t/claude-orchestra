@@ -297,6 +297,27 @@ def worker_hook(event: str = typer.Argument(..., metavar="EVENT")) -> None:
     raise typer.Exit(rc)
 
 
+@worker_app.command("shutdown-hookd")
+def worker_shutdown_hookd() -> None:
+    """Stop the project's hook daemon (if running) and clean up PID + socket."""
+    import contextlib
+    import signal
+
+    orch = _orch_dir()
+    pid_path = orch / "hookd.pid"
+    sock_path = orch / "hook.sock"
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, ValueError, OSError):
+            pass
+    for p in (pid_path, sock_path):
+        with contextlib.suppress(FileNotFoundError):
+            p.unlink()
+    typer.echo("hookd stopped")
+
+
 @app.command("send")
 def send_command(
     worker_id: str = typer.Argument(..., metavar="ID"),
