@@ -8,13 +8,18 @@ v1 changes vs v0:
   autonomous multi-step work, `Stop` only fires when the whole task is done.
 - The trust-prompt dismissal still runs in parallel (capture-pane based)
   because it fires BEFORE Claude reaches the point of emitting SessionStart.
-- New kwargs: role ('engineer'|'pm'|None), brief (markdown body for
-  engineers; mission body for PMs — caller chooses what to inject),
-  worktree_name (when set, a git worktree is created under
-  <project_root>/worktrees/<name> on branch orch/<worker_id>, and the
-  spawn uses that path as cwd).
-- When role is set, role_prompts.render_pm_prompt /
-  render_engineer_prompt is used instead of the v0 single-role template.
+- v2.0: `--role` accepts any string. Lookup order is
+  `<project_root>/.orchestra/roles/<name>.md` (user override) →
+  bundled `orchestra/roles/<name>.md` (e.g. `pm`, `engineer`). Each role
+  file may carry YAML front-matter `permissions:` that orchestra merges
+  into the worker's `.claude/settings.local.json` before opening the
+  pane. Missing role → `role_load_failed` event + status=error, no pane.
+- `brief` is the markdown body for engineers (template var
+  `{brief_section}`); for PMs, it's the full mission body.
+- `worktree_name`: when set, a git worktree is created under
+  `<project_root>/worktrees/<name>` on branch `orch/<worker_id>`, and
+  the spawn uses that path as cwd. Read-only workers (reviewers) omit
+  this and run in the main checkout.
 
 Six steps:
   1. (optional) worktree creation                    + event worktree_created
@@ -35,7 +40,7 @@ import time
 from pathlib import Path
 from time import monotonic
 
-from orchestra import prompts, role_prompts, state, tmux
+from orchestra import prompts, role_prompts, settings_merge, state, tmux
 from orchestra import worktree as worktree_mod
 
 # Timeouts are module-level so tests can monkeypatch them.
@@ -109,8 +114,15 @@ def _render_startup_prompt(
     brief: str | None,
     cwd: str,
     branch: str,
+    project_root: str | None = None,
 ) -> str:
-    """Select PM / Engineer / v0 prompt renderer based on `role`."""
+    """Select PM / Engineer / v0 prompt renderer based on `role`.
+
+    ``cwd`` is the working directory for the worker (the worktree path for
+    engineers, the project root for PMs and custom roles). ``project_root``
+    is the canonical project root used for role-template lookup; it defaults
+    to ``cwd`` when not supplied (correct for non-worktree workers).
+    """
     if role == "pm":
         return role_prompts.render_pm_prompt(
             mission=brief or task,
@@ -122,13 +134,25 @@ def _render_startup_prompt(
             engineer_specs=[],
             verifier_block="(see mission for verifier)",
         )
-    if role == "engineer":
-        return role_prompts.render_engineer_prompt(
+    if role is not None:
+        # v2.0: any non-pm role renders via the filesystem loader with
+        # engineer-shape variables (worker_id, cwd, branch, brief_section).
+        # Template lookup uses project_root so user overrides in
+        # <project_root>/.orchestra/roles/<name>.md are found even when the
+        # worker's cwd is a worktree subdirectory.
+        if brief is not None:
+            brief_section = "### YOUR BRIEF\n" f"{brief}\n"
+        else:
+            brief_section = (
+                "### YOUR BRIEF\n(none — wait for `orchestra send` instructions)\n"
+            )
+        return role_prompts.render_role(
+            role,
+            project_root=Path(project_root or cwd),
             worker_id=worker_id,
             cwd=cwd,
             branch=branch,
-            brief_path=None,
-            brief_content=brief,
+            brief_section=brief_section,
         )
     # v0 fallback — no role set
     return prompts.render_startup_prompt(
@@ -184,6 +208,28 @@ def spawn_worker(
             state.update_worker(conn, worker_id, status="error")
             return
 
+    # v2.0: load role file & merge per-role permissions before opening the window.
+    if role is not None:
+        try:
+            _, role_perms = role_prompts._load_role(role, project_root=Path(project_root))
+        except role_prompts.RoleNotFoundError as e:
+            state.record_event(
+                conn, "role_load_failed", worker_id=worker_id, error=str(e),
+            )
+            state.update_worker(conn, worker_id, status="error")
+            return
+        if role_perms:
+            if worktree_name is not None:
+                settings_path = (
+                    Path(project_root) / "worktrees" / worktree_name
+                    / ".claude" / "settings.local.json"
+                )
+            else:
+                settings_path = (
+                    Path(project_root) / ".claude" / "settings.local.json"
+                )
+            settings_merge.ensure_perms(settings_path, role_perms)
+
     # Step 2: tmux session + window
     tmux.ensure_session(session_name, cwd=cwd)
     target = tmux.new_window(session=session_name, name=worker_id, cwd=cwd)
@@ -228,6 +274,7 @@ def spawn_worker(
         startup = _render_startup_prompt(
             role=role, worker_id=worker_id, model=model, task=task,
             ctx_files=ctx_files, brief=brief, cwd=cwd, branch=branch,
+            project_root=project_root,
         )
         inject_ok = False
         for attempt in (1, 2):

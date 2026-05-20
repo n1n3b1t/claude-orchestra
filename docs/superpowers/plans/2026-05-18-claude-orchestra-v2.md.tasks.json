@@ -1,0 +1,71 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-18-claude-orchestra-v2.md",
+  "lastUpdated": "2026-05-18T10:49:29Z",
+  "tasks": [
+    {
+      "id": 20,
+      "subject": "Task 1: Tiny YAML front-matter parser",
+      "status": "completed",
+      "description": "**Goal:** Add `orchestra/_frontmatter.py` that splits a markdown file into (front matter dict, body) and rejects anything outside the supported subset (flat mapping, one level of nesting, lists as `- item` lines).\n\n**Files:**\n- Create: `orchestra/_frontmatter.py`\n- Test: `tests/test_frontmatter.py`\n\n**Verify:** `.venv/bin/pytest tests/test_frontmatter.py -v` \u2192 10/10 pass\n\n```json:metadata\n{\"files\": [\"orchestra/_frontmatter.py\", \"tests/test_frontmatter.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_frontmatter.py -v\", \"acceptanceCriteria\": [\"10/10 tests pass\", \"ruff clean\", \"mypy clean on touched file\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 21,
+      "subject": "Task 2: settings_merge.ensure_perms",
+      "status": "completed",
+      "description": "**Goal:** Add `settings_merge.ensure_perms(path, perms)` that merges `{allow,deny}` into a `.claude/settings.local.json`.\n\n**Files:**\n- Modify: `orchestra/settings_merge.py`\n- Modify: `tests/test_settings_merge.py`\n\n**Verify:** `.venv/bin/pytest tests/test_settings_merge.py -v` \u2014 6 new TestEnsurePerms cases pass\n\n```json:metadata\n{\"files\": [\"orchestra/settings_merge.py\", \"tests/test_settings_merge.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_settings_merge.py -v\", \"acceptanceCriteria\": [\"all settings_merge tests pass\", \"6 new TestEnsurePerms cases pass\", \"ruff/mypy clean\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 22,
+      "subject": "Task 3: Bundle built-in role templates",
+      "status": "completed",
+      "description": "**Goal:** Create `orchestra/roles/{pm,engineer}.md` extracted verbatim + pyproject package-data wiring.\n\n**Files:**\n- Create: `orchestra/roles/__init__.py`, `pm.md`, `engineer.md`\n- Modify: `pyproject.toml`\n\n**Verify:** `.venv/bin/python -c \"from importlib.resources import files; print(sorted(p.name for p in files('orchestra.roles').iterdir() if p.suffix == '.md'))\"` \u2192 `['engineer.md', 'pm.md']`\n\n```json:metadata\n{\"files\": [\"orchestra/roles/__init__.py\", \"orchestra/roles/pm.md\", \"orchestra/roles/engineer.md\", \"pyproject.toml\"], \"verifyCommand\": \".venv/bin/python -c \\\"from importlib.resources import files; assert sorted(p.name for p in files('orchestra.roles').iterdir() if p.suffix == '.md') == ['engineer.md', 'pm.md']\\\"\", \"acceptanceCriteria\": [\"both .md files load via importlib.resources\", \"package-data wiring correct\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 23,
+      "subject": "Task 4: Refactor role_prompts.py to filesystem loader",
+      "status": "completed",
+      "blockedBy": [
+        20,
+        22
+      ],
+      "description": "**Goal:** Replace inline templates with filesystem loader (`_load_role`, `render_role`); keep `render_pm_prompt`/`render_engineer_prompt` byte-identical to v1.x.\n\n**Files:**\n- Modify: `orchestra/role_prompts.py`, `tests/test_role_prompts.py`\n- Create: `tests/test_roles.py`\n\n**Verify:** `.venv/bin/pytest tests/test_roles.py tests/test_role_prompts.py -v && .venv/bin/pytest -q`\n\n```json:metadata\n{\"files\": [\"orchestra/role_prompts.py\", \"tests/test_roles.py\", \"tests/test_role_prompts.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_roles.py tests/test_role_prompts.py -v && .venv/bin/pytest -q\", \"acceptanceCriteria\": [\"new tests/test_roles.py passes\", \"existing test_role_prompts.py still passes (byte-identical output)\", \"full repo suite green\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 24,
+      "subject": "Task 5: Wire permissions merge into spawn",
+      "status": "completed",
+      "blockedBy": [
+        21,
+        23
+      ],
+      "description": "**Goal:** Spawn loads role file, merges `permissions` into worker's settings.local.json before opening tmux pane. Missing role \u2192 `role_load_failed` + status=error.\n\n**Files:**\n- Modify: `orchestra/spawn.py`, `tests/test_spawn.py`\n\n**Verify:** `.venv/bin/pytest tests/test_spawn.py -v && .venv/bin/pytest -q`\n\n```json:metadata\n{\"files\": [\"orchestra/spawn.py\", \"tests/test_spawn.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_spawn.py -v && .venv/bin/pytest -q\", \"acceptanceCriteria\": [\"TestPermissionsWiring 3/3 pass\", \"no regressions in repo suite\", \"ruff/mypy clean\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 25,
+      "subject": "Task 6: Documentation updates",
+      "status": "completed",
+      "blockedBy": [
+        24
+      ],
+      "description": "**Goal:** CHANGELOG v2.0 section + README 'Defining custom roles' + CLAUDE.md lookup-order note.\n\n**Files:**\n- Modify: `CHANGELOG.md`, `README.md`, `CLAUDE.md`\n\n**Verify:** `grep -q '## v2.0' CHANGELOG.md && grep -q 'Defining custom roles' README.md && grep -q 'orchestra/roles/' CLAUDE.md`\n\n```json:metadata\n{\"files\": [\"CHANGELOG.md\", \"README.md\", \"CLAUDE.md\"], \"verifyCommand\": \"grep -q '## v2.0' CHANGELOG.md && grep -q 'Defining custom roles' README.md && grep -q 'orchestra/roles/' CLAUDE.md\", \"acceptanceCriteria\": [\"all three grep checks pass\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 26,
+      "subject": "Task 7: Kanban example \u2014 roles, mission, verifier",
+      "status": "completed",
+      "blockedBy": [
+        24
+      ],
+      "description": "**Goal:** Build `examples/kanban/` with 5 role files + mission + verifier.\n\n**Files:**\n- Create: `examples/kanban/{mission.md, verifier.sh}`, `examples/kanban/roles/{architect,backend,web,cli,reviewer}.md`\n\n**Verify:** loader smoke test for all 5 role files, `bash -n examples/kanban/verifier.sh`, `test -x examples/kanban/verifier.sh`\n\n```json:metadata\n{\"files\": [\"examples/kanban/mission.md\", \"examples/kanban/roles/architect.md\", \"examples/kanban/roles/backend.md\", \"examples/kanban/roles/web.md\", \"examples/kanban/roles/cli.md\", \"examples/kanban/roles/reviewer.md\", \"examples/kanban/verifier.sh\"], \"verifyCommand\": \".venv/bin/python -c \\\"from pathlib import Path; from orchestra.role_prompts import _load_role; [(_load_role(n, project_root=Path('examples/kanban'))) for n in ('architect','backend','web','cli','reviewer')]; print('OK')\\\" && bash -n examples/kanban/verifier.sh && test -x examples/kanban/verifier.sh\", \"acceptanceCriteria\": [\"all 5 roles load via _load_role\", \"reviewer.md denies Write/Edit/rm/git push/commit/checkout\", \"verifier.sh is executable + syntactically valid\"], \"tags\": []}\n```"
+    },
+    {
+      "id": 27,
+      "subject": "Task 8: Kanban e2e driver + orchestrated run",
+      "status": "completed",
+      "blockedBy": [
+        26
+      ],
+      "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user. Close only after every acceptance criterion has been re-validated independently, with output captured.\n\n**Goal:** Author `scripts/e2e-build-kanban.sh` and actually run it; verifier must exit 0.\n\n**Files:**\n- Create: `scripts/e2e-build-kanban.sh`\n\n**Verify:** `./scripts/e2e-build-kanban.sh` exits 0 and prints `OK` from the verifier\n\n```json:metadata\n{\"files\": [\"scripts/e2e-build-kanban.sh\"], \"verifyCommand\": \"./scripts/e2e-build-kanban.sh\", \"acceptanceCriteria\": [\"script exit 0\", \"verifier.sh exits 0 inside /tmp/kanban-e2e producing OK\", \"five-role pipeline observed (architect \u2192 backend+web+cli parallel \u2192 reviewer)\", \"no role_load_failed events\", \"reviewer ran with no worktree + restricted permissions\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requiresUserSpecification\": false, \"gateScope\": \"task\", \"failurePolicy\": \"halt\", \"requireEvidenceTokens\": [[\"architect-committed\", \"api.yaml-on-main\"], [\"engineers-merged\", \"backend\", \"web\", \"cli\"], [\"reviewer-approved\", \"verifier-OK\"]]}\n```"
+    }
+  ]
+}

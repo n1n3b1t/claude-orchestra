@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.0 — generic role framework (2026-05-18)
+
+**Three new framework primitives** that make orchestra capable of multi-role
+multi-stack projects without encoding flow-specific logic.
+
+- **User-defined roles via filesystem.** Role templates moved from Python
+  functions to `.md` files. Project override at
+  `<project>/.orchestra/roles/<name>.md`, bundled built-ins at
+  `orchestra/roles/<name>.md`. `--role` accepts any name; missing files
+  surface as `role_load_failed`.
+- **Per-role tool permissions.** Each role file may carry YAML front matter
+  declaring `permissions.allow` / `permissions.deny`. Orchestra merges the
+  block into the worker's `.claude/settings.local.json` before opening the
+  tmux pane.
+- **Read-only workers via composition.** A reviewer is just a role with
+  restrictive permissions, spawned without `--worktree`. No new flag.
+
+**Proof:** `examples/kanban/` plus `scripts/e2e-build-kanban.sh` exercise
+the framework end-to-end on an architect + backend + web + CLI + reviewer
+project. First run on 2026-05-18 completed in ~7 min wall-clock, $under-budget
+cost: architect committed `docs/api.yaml`, three engineers built `backend/app.py`
+(FastAPI), `web/index.html`+`app.js`, and `cli/kanban_cli.py` in parallel, the
+reviewer (read-only role, no worktree) approved with `permissions.deny` enforced
+against Write/Edit/rm/git push at the Claude Code layer, and the verifier
+(`bash examples/kanban/verifier.sh`) exited 0 with `OK` after 6 acceptance
+checks (health → boards → cards → patch → web HTML → CLI list).
+
+**Backward compatibility:** v1.x missions using `--role pm` and
+`--role engineer` work unchanged — the bundled `pm.md` and `engineer.md`
+reproduce the v1.x templates byte-for-byte.
+
+**Out of scope (deferred to v2.1+):** recursive PMs, first-class
+worker DAG / `--blocked-by`, PM crash resume, cost-budget kill,
+cross-worktree inspector mode.
+
 ## v1.3 (in progress)
 
 - Fix: `orchestra spawn` no longer waits for the first `turn_complete`

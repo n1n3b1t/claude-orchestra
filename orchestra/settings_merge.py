@@ -57,3 +57,48 @@ def ensure_hooks(path: Path) -> None:
     for event in EVENTS_NO_MATCHER + EVENTS_WITH_MATCHER:
         hooks[event] = _merge_event(hooks.get(event) or [], event)
     path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _merge_string_list(existing: list[Any] | None, additions: list[Any]) -> list[str]:
+    """Append additions to existing, keeping only strings, dedupe, preserve order."""
+    out: list[str] = []
+    for src in (existing or []), additions:
+        for item in src:
+            if isinstance(item, str) and item not in out:
+                out.append(item)
+    return out
+
+
+def ensure_perms(path: Path, perms: dict[str, Any]) -> None:
+    """Merge a permissions block into `path`. Creates the file if missing.
+
+    `perms` shape: {"allow": [...], "deny": [...]} (either key optional).
+    Entries that aren't strings are dropped silently — Claude Code is the
+    schema authority and orchestra just plumbs the merge.
+    """
+    allow = list(perms.get("allow") or [])
+    deny = list(perms.get("deny") or [])
+    if not allow and not deny:
+        return  # nothing to write
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: Any
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            data = None
+    else:
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+
+    perms_block = data.get("permissions")
+    if not isinstance(perms_block, dict):
+        perms_block = {}
+        data["permissions"] = perms_block
+
+    perms_block["allow"] = _merge_string_list(perms_block.get("allow"), allow)
+    perms_block["deny"] = _merge_string_list(perms_block.get("deny"), deny)
+
+    path.write_text(json.dumps(data, indent=2) + "\n")
