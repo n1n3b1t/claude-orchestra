@@ -1,6 +1,7 @@
 """Typer commands for orchestra."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -9,6 +10,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -364,28 +366,93 @@ def poll_command(
 
 @app.command("merge")
 def merge_command(
-    worker_id: str = typer.Argument(..., metavar="ID"),
+    ids: Annotated[list[str] | None, typer.Argument(metavar="ID...")] = None,
+    batch: Annotated[
+        bool,
+        typer.Option(
+            "--batch", "-b",
+            help="Merge multiple worker branches sequentially; "
+                 "aborts on first conflict.",
+        ),
+    ] = False,
 ) -> None:
-    """git merge orch/<worker_id> from the project root (caller's cwd)."""
-    project_root = Path.cwd()
-    branch = f"orch/{worker_id}"
-    with _open_db() as conn:
-        state.record_event(conn, "merge_attempted", worker_id=worker_id, branch=branch)
-        proc = subprocess.run(
-            ["git", "-C", str(project_root), "merge", "--no-edit", branch],
-            capture_output=True, text=True,
+    """Merge orch/<worker_id> into the current branch.
+
+    Single-arg form: ``orchestra merge backend`` — unchanged behaviour, echoes a
+    human-readable line, exits 1 on conflict.
+
+    Batch form: ``orchestra merge --batch backend web cli`` — merges each in
+    order in-process. On the first conflict, aborts the in-progress merge and
+    SKIPS remaining ids (no events recorded for skipped ids). Emits JSON to
+    stdout; exits 2 on any non-clean result.
+    """
+    if not ids:
+        typer.echo("error: provide an ID or --batch <id1> <id2> ...", err=True)
+        raise typer.Exit(2)
+    if not batch and len(ids) > 1:
+        typer.echo(
+            "error: multiple IDs require --batch (got "
+            f"{len(ids)}: {' '.join(ids)})",
+            err=True,
         )
-        if proc.returncode == 0:
-            state.record_event(conn, "merge_ok", worker_id=worker_id,
-                               stdout=proc.stdout[-2000:])
-            typer.echo(f"merged {branch}")
-        else:
-            state.record_event(
-                conn, "merge_conflict", worker_id=worker_id,
-                stdout=proc.stdout[-2000:], stderr=proc.stderr[-2000:],
+        raise typer.Exit(2)
+
+    project_root = Path.cwd()
+    # Single-arg legacy path: preserve exact pre-existing output + exit code.
+    if not batch:
+        wid = ids[0]
+        branch = f"orch/{wid}"
+        with _open_db() as conn:
+            state.record_event(conn, "merge_attempted", worker_id=wid, branch=branch)
+            proc = subprocess.run(
+                ["git", "-C", str(project_root), "merge", "--no-edit", branch],
+                capture_output=True, text=True,
             )
-            typer.echo(f"merge conflict on {branch}", err=True)
-            raise typer.Exit(1)
+            if proc.returncode == 0:
+                state.record_event(conn, "merge_ok", worker_id=wid,
+                                   stdout=proc.stdout[-2000:])
+                typer.echo(f"merged {branch}")
+            else:
+                state.record_event(
+                    conn, "merge_conflict", worker_id=wid,
+                    stdout=proc.stdout[-2000:], stderr=proc.stderr[-2000:],
+                )
+                typer.echo(f"merge conflict on {branch}", err=True)
+                raise typer.Exit(1)
+        return
+
+    results: list[dict[str, str]] = []
+    aborted = False
+    with _open_db() as conn:
+        for wid in ids:
+            if aborted:
+                results.append({"id": wid, "status": "skipped"})
+                continue
+            branch = f"orch/{wid}"
+            state.record_event(conn, "merge_attempted", worker_id=wid, branch=branch)
+            proc = subprocess.run(
+                ["git", "-C", str(project_root), "merge", "--no-edit", branch],
+                capture_output=True, text=True,
+            )
+            if proc.returncode == 0:
+                state.record_event(conn, "merge_ok", worker_id=wid,
+                                   stdout=proc.stdout[-2000:])
+                results.append({"id": wid, "status": "ok"})
+            else:
+                summary = (proc.stdout + proc.stderr)[:500]
+                state.record_event(
+                    conn, "merge_conflict", worker_id=wid,
+                    stdout=proc.stdout[-2000:], stderr=proc.stderr[-2000:],
+                )
+                results.append({"id": wid, "status": "conflict", "summary": summary})
+                subprocess.run(
+                    ["git", "-C", str(project_root), "merge", "--abort"],
+                    capture_output=True,
+                )
+                aborted = True
+    typer.echo(json.dumps(results, indent=2))
+    if any(r["status"] != "ok" for r in results):
+        raise typer.Exit(2)
 
 
 @app.command("reap")
