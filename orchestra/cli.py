@@ -121,6 +121,37 @@ def spawn_command(
         typer.echo(f"spawn {worker_id} → {session_name}:{worker_id}")
 
 
+@app.command("spawn-batch")
+def spawn_batch_command(
+    spec_file: Path = typer.Argument(..., metavar="SPEC_JSONL"),  # noqa: B008
+) -> None:
+    """Spawn multiple workers concurrently from a JSONL spec file."""
+    from orchestra import spawn_batch as sb
+    project_root = Path.cwd()
+    state_db = project_root / ORCH_DIR_NAME / "state.db"
+    if not state_db.exists():
+        typer.echo("error: run `orchestra init` first", err=True)
+        raise typer.Exit(2)
+    try:
+        specs = sb.parse_jsonl(spec_file)
+    except (ValueError, OSError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from None
+    session_name = _session_name_for(project_root)
+    results = sb.run(
+        specs=specs,
+        project_root=str(project_root),
+        state_db=state_db,
+        session_name=session_name,
+    )
+    bad = [r for r in results if r["status"] != "ok"]
+    for r in results:
+        suffix = f" — {r.get('error', '')}" if r["status"] != "ok" else ""
+        typer.echo(f"  {r['id']}: {r['status']}{suffix}")
+    if bad:
+        raise typer.Exit(2)
+
+
 @app.command()
 def status(worker: str | None = typer.Option(None, "--worker")) -> None:
     """Print worker status table; with --worker, print detail."""
