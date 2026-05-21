@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.3 — model fix + DX trio (2026-05-21)
+
+**Critical fix:** `orchestra spawn` was sending `/<model>` to the worker pane to switch model — but Claude Code's slash command is actually `/model <name>`. Every orchestra run since v0 silently ran every worker on Opus 1M, regardless of `--model sonnet` / `--model haiku`. Fix in `orchestra/spawn.py:266` (closes #38). User-spotted from `.orchestra/hook-debug.log` model-field inspection.
+
+**DX trio** (closes #34, #35, #36):
+
+- **`orchestra new-role <name> [--engineer|--reviewer|--runner]`** — scaffolds `.orchestra/roles/<name>.md` with a sensible permissions skeleton for the chosen archetype. Saves the ~20-line enumeration most users would write by hand for a runner-style role.
+- **Mission `pre-run.sh` hook** — `orchestra run` checks `<project>/.orchestra/pre-run.sh` and executes it before spawning the PM. Exit non-zero aborts the run. Use case: `adb connect <ip>` to pre-warm a flaky network adb session, avoiding a "no device attached" escalation in the first 30 seconds of the PM's mega-turn.
+- **`--exclusive-resource <name>` lock** — for missions that touch shared hardware (one Android device, one printer, one db cluster). New `resource_locks` table in state.db, `acquire_resource` / `release_resource` / `release_worker_resources` helpers. Spawn blocks until the named lock is available; auto-released on `worker_done`, `status=error`, or explicit `orchestra release-resource <name>`. Works on both `orchestra spawn --exclusive-resource X` and the `resource` key in spawn-batch JSONL.
+
+**Filed for v2.3 finish-up:**
+- #40 — cost column shows API-list-price dollars; subscription users want tokens. Switch default to tokens, `--cost-mode dollars` flag.
+- #41 — full-suite test flakiness post-resource-locks (1 random sqlite OperationalError per run, all tests pass in isolation).
+- #32, #33 — earlier v2.3 issues (mission-lint false-positive, engineer-cost-zero), not implemented in this batch.
+
+**Tests:** 264 (up from 246 at v2.2 close, modulo the flakiness in #41).
+
+**Proven via dogfood:** the v2.3 batch itself was orchestrated. All 3 engineers actually ran on **Sonnet 4.6** (confirmed via pane status bars after the #38 fix landed earlier in the same session) — the first orchestra run where the cost-tier separation was real, not just claimed.
+
 ## v2.2 — DX quick wins (2026-05-20)
 
 Three small DX improvements identified by observing eight orchestrated runs (v1.2 dogfood → ws-scrcpy phase 1):
