@@ -737,6 +737,43 @@ class TestPermissionsWiring:
         assert not new_window_called["v"]
 
 
+class TestExclusiveResource:
+    def test_spawn_worker_with_exclusive_resource_records_event(
+        self, tmp_db: Path, fake_tmux: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = _open(tmp_db)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+
+        def fake_wait_idle(
+            conn_: sqlite3.Connection, worker_id_: str, *, target: str | None = None
+        ) -> bool:
+            state.record_event(conn_, "session_ready", worker_id=worker_id_)
+            return True
+
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", fake_wait_idle)
+
+        spawn.spawn_worker(
+            conn,
+            worker_id="w1",
+            model="sonnet",
+            task="t",
+            project_root="/tmp/proj",
+            state_db=tmp_db,
+            ctx_files=[],
+            session_name="orch-proj",
+            exclusive_resource="device1",
+        )
+
+        events = state.list_events(conn, worker_id="w1")
+        resource_events = [e for e in events if e.kind == "resource_acquired"]
+        assert len(resource_events) == 1
+        assert resource_events[0].payload.get("resource") == "device1"
+
+        worker = state.get_worker(conn, "w1")
+        assert worker is not None
+        assert worker.status == "working"
+
+
 class TestCustomRoleRendering:
     def test_custom_role_uses_filesystem_template_not_v0_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

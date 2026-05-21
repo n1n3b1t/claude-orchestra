@@ -226,6 +226,46 @@ class TestSchemaUpgrade:
         assert got.worktree == "myworktree"
 
 
+class TestResourceLocks:
+    def test_acquire_succeeds_when_no_lock(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        result = state.acquire_resource(conn, "device1", "w1", blocking=False)
+        assert result is True
+        row = conn.execute(
+            "SELECT worker_id FROM resource_locks WHERE name = ?", ("device1",)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "w1"
+
+    def test_acquire_non_blocking_on_held_returns_false(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        assert state.acquire_resource(conn, "device1", "w1", blocking=False) is True
+        assert state.acquire_resource(conn, "device1", "w2", blocking=False) is False
+
+    def test_release_only_removes_matching_holder(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        state.acquire_resource(conn, "device1", "w1", blocking=False)
+        assert state.release_resource(conn, "device1", "w2") is False
+        assert state.release_resource(conn, "device1", "w1") is True
+        row = conn.execute(
+            "SELECT 1 FROM resource_locks WHERE name = ?", ("device1",)
+        ).fetchone()
+        assert row is None
+
+    def test_release_worker_resources_removes_all(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        state.acquire_resource(conn, "dev-a", "w1", blocking=False)
+        state.acquire_resource(conn, "dev-b", "w1", blocking=False)
+        count = state.release_worker_resources(conn, "w1")
+        assert count == 2
+        rows = conn.execute("SELECT * FROM resource_locks").fetchall()
+        assert rows == []
+
+    def test_resource_locks_table_exists_after_init_schema(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        conn.execute("SELECT 1 FROM resource_locks LIMIT 1")  # must not raise
+
+
 class TestRoleAndWorktree:
     def test_create_with_role_and_worktree(self, tmp_db: Path) -> None:
         conn = _open(tmp_db)

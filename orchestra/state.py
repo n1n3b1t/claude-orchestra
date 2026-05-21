@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,6 +160,11 @@ CREATE TABLE IF NOT EXISTS escalations (
     blocking  INTEGER NOT NULL,
     resolved  INTEGER NOT NULL DEFAULT 0,
     answer    TEXT
+);
+CREATE TABLE IF NOT EXISTS resource_locks (
+    name        TEXT PRIMARY KEY,
+    worker_id   TEXT NOT NULL,
+    acquired_at TEXT NOT NULL
 );
 """
 
@@ -380,3 +386,59 @@ def list_open_escalations(
             "SELECT * FROM escalations WHERE resolved = 0 ORDER BY id ASC"
         ).fetchall()
     return [_row_to_escalation(r) for r in rows]
+
+
+# ---- Resource locks ----
+
+def acquire_resource(
+    conn: sqlite3.Connection,
+    name: str,
+    worker_id: str,
+    *,
+    blocking: bool = True,
+    timeout_s: float = 300.0,
+    poll_s: float = 0.5,
+) -> bool:
+    """INSERT-OR-FAIL on resource_locks(name).
+
+    Returns True on acquire. When blocking=True and the row exists, polls every
+    poll_s seconds until either the lock is gone (then re-tries INSERT) or
+    timeout_s elapses. Returns False if non-blocking-and-held or timeout.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            conn.execute(
+                "INSERT INTO resource_locks (name, worker_id, acquired_at)"
+                " VALUES (?, ?, ?)",
+                (name, worker_id, now_iso()),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            if not blocking:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(poll_s)
+
+
+def release_resource(
+    conn: sqlite3.Connection, name: str, worker_id: str
+) -> bool:
+    """DELETE WHERE name=? AND worker_id=?. Returns True iff a row was deleted."""
+    cur = conn.execute(
+        "DELETE FROM resource_locks WHERE name = ? AND worker_id = ?",
+        (name, worker_id),
+    )
+    return cur.rowcount > 0
+
+
+def release_worker_resources(
+    conn: sqlite3.Connection, worker_id: str
+) -> int:
+    """Release ALL locks held by worker_id. Returns count released."""
+    cur = conn.execute(
+        "DELETE FROM resource_locks WHERE worker_id = ?",
+        (worker_id,),
+    )
+    return cur.rowcount

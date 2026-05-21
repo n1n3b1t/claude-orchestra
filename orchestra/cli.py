@@ -98,6 +98,10 @@ def spawn_command(
     role: str = typer.Option("engineer", "--role"),
     brief: Path | None = typer.Option(None, "--brief"),  # noqa: B008
     worktree_name: str | None = typer.Option(None, "--worktree"),  # noqa: B008
+    exclusive_resource: str | None = typer.Option(  # noqa: B008
+        None, "--exclusive-resource",
+        help="Acquire a named exclusive lock before spawn; blocks if held.",
+    ),
 ) -> None:
     """Spawn a worker into a new tmux window."""
     project_root = str(Path.cwd())
@@ -117,6 +121,7 @@ def spawn_command(
             role=role,
             brief=brief_text,
             worktree_name=worktree_name,
+            exclusive_resource=exclusive_resource,
         )
         typer.echo(f"spawn {worker_id} → {session_name}:{worker_id}")
 
@@ -201,6 +206,7 @@ def stop(worker_id: str = typer.Argument(..., metavar="ID")) -> None:
         if signaled:
             state.update_worker(conn, worker_id, status="stopped")
             state.record_event(conn, "stopped", worker_id=worker_id)
+            state.release_worker_resources(conn, worker_id)
             typer.echo(f"stopped {worker_id}")
         else:
             state.update_worker(conn, worker_id, status="stop_send_failed")
@@ -209,6 +215,28 @@ def stop(worker_id: str = typer.Argument(..., metavar="ID")) -> None:
                 err=True,
             )
             raise typer.Exit(1)
+
+
+@app.command("release-resource")
+def release_resource_command(
+    name: str = typer.Argument(..., metavar="NAME"),
+    worker_id: str | None = typer.Option(
+        None, "--worker", help="Only release if held by this worker."
+    ),
+) -> None:
+    """Manually release a resource lock (emergency / cleanup)."""
+    with _open_db() as conn:
+        if worker_id:
+            ok = state.release_resource(conn, name, worker_id)
+        else:
+            cur = conn.execute(
+                "DELETE FROM resource_locks WHERE name = ?", (name,)
+            )
+            ok = cur.rowcount > 0
+        if not ok:
+            typer.echo(f"no lock held on {name}", err=True)
+            raise typer.Exit(2)
+        typer.echo(f"released {name}")
 
 
 @app.command()
@@ -336,6 +364,7 @@ def worker_done(
     try:
         state.update_worker(conn, wid, status="done", progress=summary)
         state.record_event(conn, "worker_done", worker_id=wid, summary=summary)
+        state.release_worker_resources(conn, wid)
     finally:
         conn.close()
 
