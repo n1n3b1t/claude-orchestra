@@ -51,6 +51,7 @@ def _spawn_one(
             role=spec.get("role"),
             brief=spec.get("brief"),
             worktree_name=spec.get("worktree"),
+            exclusive_resource=spec.get("resource"),
         )
         return {"id": spec["id"], "status": "ok"}
     except Exception as e:  # noqa: BLE001 — one failure shouldn't kill the batch

@@ -173,6 +173,7 @@ def spawn_worker(
     role: str | None = None,
     brief: str | None = None,
     worktree_name: str | None = None,
+    exclusive_resource: str | None = None,
 ) -> None:
     branch = f"orch/{worker_id}"
     pane_target = f"{session_name}:{worker_id}"
@@ -190,6 +191,24 @@ def spawn_worker(
         role=role, worktree=worktree_name,
     )
 
+    # Resource lock acquisition — before worktree so a failed acquire never
+    # creates filesystem side effects.
+    if exclusive_resource is not None:
+        acquired = state.acquire_resource(
+            conn, exclusive_resource, worker_id, blocking=True
+        )
+        if not acquired:
+            state.record_event(
+                conn, "resource_acquire_failed", worker_id=worker_id,
+                resource=exclusive_resource,
+            )
+            state.update_worker(conn, worker_id, status="error")
+            return
+        state.record_event(
+            conn, "resource_acquired", worker_id=worker_id,
+            resource=exclusive_resource,
+        )
+
     # Pre-step: worktree (engineers only — PMs work in the main checkout).
     cwd = project_root
     if worktree_name is not None:
@@ -206,6 +225,7 @@ def spawn_worker(
                 name=worktree_name, error=repr(e),
             )
             state.update_worker(conn, worker_id, status="error")
+            state.release_worker_resources(conn, worker_id)
             return
 
     # v2.0: load role file & merge per-role permissions before opening the window.
@@ -217,6 +237,7 @@ def spawn_worker(
                 conn, "role_load_failed", worker_id=worker_id, error=str(e),
             )
             state.update_worker(conn, worker_id, status="error")
+            state.release_worker_resources(conn, worker_id)
             return
         if role_perms:
             if worktree_name is not None:
@@ -297,6 +318,7 @@ def spawn_worker(
                 wait_conn, "prompt_inject_failed", worker_id=worker_id,
             )
             state.update_worker(wait_conn, worker_id, status="error")
+            state.release_worker_resources(wait_conn, worker_id)
             return
         state.record_event(wait_conn, "prompt_injected", worker_id=worker_id)
 
