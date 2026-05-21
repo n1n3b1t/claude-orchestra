@@ -28,7 +28,7 @@ Six steps:
   4. send_literal(boot_cmd) + send_enter
   5. wait for session_ready event (max BOOT_TIMEOUT_S) + event spawn_idle / spawn_timeout
      trust-prompt dismissal runs in parallel (capture-pane)
-  6. send_literal("/<model>") + send_enter           + event model_switched
+  6. send_literal("/model <name>") + send_enter      + event model_switched
   7. send_multiline(startup_prompt) with 1 retry     + event prompt_injected / failed
      followed by `spawn_ok` and status=working.
 """
@@ -262,8 +262,12 @@ def spawn_worker(
         else:
             state.record_event(wait_conn, "spawn_idle", worker_id=worker_id)
 
-        # Step 5: switch model
-        tmux.send_literal(target, f"/{model}")
+        # Step 5: switch model. Claude Code's slash command is
+        # `/model <name>` (parent /model + name as argument); sending
+        # `/haiku` directly is a no-op and the session stays on its
+        # default (Opus 1M). Valid names per Claude Code: `opus`,
+        # `sonnet`, `haiku`, `default` (= Opus 1M).
+        tmux.send_literal(target, f"/model {model}")
         tmux.send_enter(target)
         time.sleep(3.0)
         state.record_event(
