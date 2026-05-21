@@ -294,6 +294,93 @@ class TestPreflight:
         assert rc == 2
 
 
+class TestPreRunHook:
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+        """Return (mission, db). Leaves tmp_path as cwd."""
+        _init_git_repo(tmp_path)
+        mission = tmp_path / "mission.md"
+        mission.write_text("# Mission\nDo a thing.\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        return mission, db
+
+    def test_pre_run_sh_missing_proceeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        mission, db = self._setup(tmp_path, monkeypatch)
+        called = []
+
+        def _mock_spawn(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            called.append(True)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _mock_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+
+        def _emit_done():
+            time.sleep(0.2)
+            conn = state.connect(db)
+            try:
+                state.record_event(conn, "worker_done", worker_id="pm", summary="ok")
+            finally:
+                conn.close()
+
+        threading.Thread(target=_emit_done, daemon=True).start()
+        rc = run_mod.run_mission(mission, model="opus", max_wallclock=10.0, max_activity=5.0)
+        assert rc == 0
+        assert called, "spawn_worker was not called — pre-run check caused early exit"
+
+    def test_pre_run_sh_zero_exit_proceeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        mission, db = self._setup(tmp_path, monkeypatch)
+        pre_run = tmp_path / ".orchestra" / "pre-run.sh"
+        pre_run.write_text("#!/bin/bash\necho hello from pre-run\n")
+        pre_run.chmod(0o755)
+
+        called = []
+
+        def _mock_spawn(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            called.append(True)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _mock_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+
+        def _emit_done():
+            time.sleep(0.2)
+            conn = state.connect(db)
+            try:
+                state.record_event(conn, "worker_done", worker_id="pm", summary="ok")
+            finally:
+                conn.close()
+
+        threading.Thread(target=_emit_done, daemon=True).start()
+        rc = run_mod.run_mission(mission, model="opus", max_wallclock=10.0, max_activity=5.0)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "executing" in out
+        assert called, "spawn_worker was not called after successful pre-run.sh"
+
+    def test_pre_run_sh_nonzero_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        mission, db = self._setup(tmp_path, monkeypatch)
+        pre_run = tmp_path / ".orchestra" / "pre-run.sh"
+        pre_run.write_text("#!/bin/bash\nexit 7\n")
+        pre_run.chmod(0o755)
+
+        called = []
+
+        def _mock_spawn(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            called.append(True)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _mock_spawn)
+        rc = run_mod.run_mission(mission, model="opus", max_wallclock=10.0, max_activity=5.0)
+        assert rc == 2
+        assert not called, "spawn_worker should NOT be called when pre-run.sh fails"
+
+
 class TestPayloadSummary:
     def test_truncates_long_payload(self):
         long = "x" * 500
