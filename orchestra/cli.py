@@ -570,3 +570,34 @@ def reap_command(
     if not _reap(worker_id):
         typer.echo(f"worker {worker_id} has no worktree", err=True)
         raise typer.Exit(2)
+
+
+@app.command("new-role")
+def new_role_command(
+    name: str = typer.Argument(..., metavar="NAME"),
+    engineer: bool = typer.Option(False, "--engineer"),
+    reviewer: bool = typer.Option(False, "--reviewer"),
+    runner: bool = typer.Option(False, "--runner"),
+    force: bool = typer.Option(False, "--force"),
+) -> None:
+    """Scaffold a role markdown file in .orchestra/roles/<NAME>.md."""
+    from orchestra import role_scaffold  # local import keeps CLI cheap
+
+    if sum([engineer, reviewer, runner]) > 1:
+        typer.echo("error: at most one of --engineer, --reviewer, --runner may be set", err=True)
+        raise typer.Exit(2)
+
+    dest_dir = Path.cwd() / ORCH_DIR_NAME / "roles"
+    try:
+        path = role_scaffold.scaffold(
+            name,
+            dest_dir=dest_dir,
+            engineer=engineer,
+            reviewer=reviewer,
+            runner=runner,
+            force=force,
+        )
+    except FileExistsError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(str(path.resolve()))
