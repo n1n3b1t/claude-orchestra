@@ -51,6 +51,8 @@ the PM signals done (or a watchdog fires):
 orchestra run examples/urlshortener-mission.md
 ```
 
+Place an executable `.orchestra/pre-run.sh` in your project to run setup steps before the PM spawns — for example, `adb connect <ip>` for on-device testing missions. A non-zero exit aborts the run before any API credits are spent.
+
 ## Defining custom roles
 
 Role templates are markdown files. Lookup order:

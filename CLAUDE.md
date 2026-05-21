@@ -49,6 +49,10 @@ The orchestrator is a thin coordinator on top of three substrates:
 2. **SQLite state.db** under `<project>/.orchestra/` — append-only `events` table + mutable `workers` and `escalations` tables. WAL mode, `busy_timeout=5000ms`. `events.kind` is free-form text — no schema migration when new kinds are added. See `orchestra/state.py`.
 3. **Claude Code hooks** — every hook event (`SessionStart`, `Stop`, `Pre/PostToolUse`, `SessionEnd`, `Notification`) fires `orchestra worker hook <event>`, which reads the JSON payload from stdin and writes a typed event row. The hook command MUST exit 0 even on internal error — a non-zero hook breaks the worker's turn. See `orchestra/hooks.py`.
 
+### Pre-run hook
+
+`<project>/.orchestra/pre-run.sh` is an optional shell script that runs before any PM is spawned. It executes between the `.orchestra`-exists check and the PATH manipulation step in `run_mission`. If the script exits non-zero, `orchestra run` aborts with exit code 2 — the same as other pre-flight failures — so broken environment setup is caught before any API credits are spent. The canonical use case is `adb connect <ip>` to pre-warm a flaky network ADB session for on-device testing missions. When the file is absent the hook is silently skipped; when present but not executable, `orchestra run` emits a warning and proceeds.
+
 ### Data flow
 
 ```

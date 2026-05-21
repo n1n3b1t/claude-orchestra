@@ -93,6 +93,24 @@ def run_mission(
         print("[runner] error: run `orchestra init` first", flush=True)
         return 2
 
+    # ---- Pre-flight: optional pre-run.sh hook ----
+    pre_run = orch_dir / "pre-run.sh"
+    if pre_run.exists() and os.access(pre_run, os.X_OK):
+        print(f"[runner] executing {pre_run}", flush=True)
+        proc = subprocess.run([str(pre_run)], check=False)
+        if proc.returncode != 0:
+            print(
+                f"[runner] error: pre-run.sh exited {proc.returncode}; aborting",
+                flush=True,
+            )
+            return 2
+    elif pre_run.exists():
+        # File present but not executable — warn and proceed (no-op).
+        print(
+            f"[runner] warning: {pre_run} exists but is not executable; skipping",
+            flush=True,
+        )
+
     # ---- Pre-flight: no existing pm row ----
     conn = state.connect(state_db_path)
     try:
