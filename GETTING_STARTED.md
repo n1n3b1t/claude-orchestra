@@ -11,13 +11,17 @@ the PM spawns and API credits are spent.
 ## Want Claude to set this up for you?
 
 Paste the block below into a fresh Claude Code session **opened inside your
-project directory**. Claude will read the rest of this file and execute the
-setup for you, stopping before the credit-spending step.
+project directory**. The prompt is fully self-contained — Claude will fetch the
+guide itself and execute the setup without needing any further input from you
+until step 6.
 
 ```
-You are helping me set up `orchestra` in this project. Read GETTING_STARTED.md
-in the orchestra repo (path I will give you, or fetch via the URL I will
-provide), then execute steps 1 through 5 in order. After each step, run the
+You are helping me set up `orchestra` in this project.
+
+Fetch and read this guide:
+https://raw.githubusercontent.com/n1n3b1t/claude-orchestra/main/GETTING_STARTED.md
+
+Then execute steps 1 through 5 in order. After each step, run the
 listed `Verify` command and only proceed if it passes. If any verification
 fails, STOP and ask me before doing anything else. Do NOT run step 6
 (`orchestra run`) — it spends API credits. When you reach the boundary between
@@ -34,13 +38,13 @@ myself.
 
 **Run:**
 ```bash
-python3 --version   # need 3.11+
+python3 --version   # need 3.10+
 tmux -V
 git --version
 claude --version    # the Claude Code CLI; you must already be logged in
 ```
 
-**Verify:** All four commands exit 0 and the Python version is `>= 3.11`.
+**Verify:** All four commands exit 0 and the Python version is `>= 3.10`.
 
 ## 2. Install orchestra
 
@@ -56,7 +60,7 @@ cd claude-orchestra
 python3 -m venv .venv
 .venv/bin/pip install -e .
 # Either add .venv/bin to PATH, or use the absolute path everywhere:
-export PATH="$PWD/.venv/bin:$PATH"
+export PATH="$PWD/.venv/bin:$PATH"   # session-scoped; add to ~/.bashrc or ~/.zshrc to persist
 ```
 
 **Verify:**
@@ -75,7 +79,7 @@ orchestrator can observe worker events.
 
 **Run:**
 ```bash
-cd /path/to/your/project
+cd /path/to/your/project   # agents already inside the project can skip this
 git init           # skip if already a repo
 orchestra init
 ```
