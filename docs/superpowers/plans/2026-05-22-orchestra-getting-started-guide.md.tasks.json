@@ -1,0 +1,19 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-22-orchestra-getting-started-guide.md",
+  "tasks": [
+    {
+      "id": 8,
+      "subject": "Task 1: Write GETTING_STARTED.md and link from README",
+      "status": "pending",
+      "description": "**Goal:** Produce the complete guide at the repo root and a discoverability link from `README.md`.\n\n**Files:**\n- Create: `GETTING_STARTED.md`\n- Modify: `README.md`\n\n**Acceptance Criteria:**\n- File at repo root\n- Paste-prompt code block at top, instructs stop at step 5/6 boundary\n- API-credit callout present\n- Sections 1-10 with correct headings in order\n- Sections 1-6 each contain What/Run/Verify labels exactly once\n- Mission template mentions worker_done\n- Section 10 has three link bullets\n- Line count 150-300\n- No TBD/TODO/FILL ME IN/XXX/<insert\n- README link line added\n\n**Verify:** see plan doc Task 1\n\n```json:metadata\n{\"files\": [\"GETTING_STARTED.md\", \"README.md\"], \"verifyCommand\": \"test -f GETTING_STARTED.md && [ \\\"$(wc -l < GETTING_STARTED.md)\\\" -ge 150 ] && [ \\\"$(wc -l < GETTING_STARTED.md)\\\" -le 300 ] && ! grep -E 'TBD|TODO|FILL ME IN|XXX|<insert' GETTING_STARTED.md && grep -q 'GETTING_STARTED.md' README.md && echo OK\", \"acceptanceCriteria\": [\"file at repo root\", \"paste-prompt at top with step-5/6 stop\", \"credit callout\", \"sections 1-10 in order\", \"What/Run/Verify labels in sections 1-6\", \"mission template mentions worker_done\", \"section 10 three links\", \"line count 150-300\", \"no placeholders\", \"README link added\"]}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 2: Dry-run the guide in a clean directory and fix issues",
+      "status": "pending",
+      "blockedBy": [8],
+      "description": "**Goal:** Execute every `Verify` command in the guide against a freshly created scratch project; fix any issues found. Step 6 checked by --help only.\n\n**Files:**\n- Modify (only if dry-run finds issues): `GETTING_STARTED.md`\n\n**Acceptance Criteria:**\n- Every Verify in sections 1-5 passes in /tmp/orchestra-dryrun-<ts>\n- orchestra run is NOT executed; only orchestra run --help\n- Any guide bugs fixed; dry-run re-run until clean\n- Scratch dir removed at end\n\n**Verify:** dry-run script exits 0 ending with `=== Dry-run passed ===`.\n\n```json:metadata\n{\"files\": [\"GETTING_STARTED.md\"], \"verifyCommand\": \"bash /tmp/orchestra-guide-dryrun.sh\", \"acceptanceCriteria\": [\"every Verify in sections 1-5 passes\", \"orchestra run NOT executed; only --help\", \"guide bugs fixed and dry-run re-run until clean\", \"scratch dir removed\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-22T00:00:00Z"
+}
