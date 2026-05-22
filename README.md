@@ -4,6 +4,8 @@ Experiments in driving Claude Code instances from outside the process — starti
 with tmux send-keys, since every Claude Code session is just a TTY-attached
 program running in a pane.
 
+New to orchestra? Start with [GETTING_STARTED.md](GETTING_STARTED.md).
+
 ## Findings so far
 
 ### Yes, you can control Claude via tmux send-keys.
