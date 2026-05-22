@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -215,6 +217,22 @@ class TestTypedDispatch:
         assert evts[0].payload.get("input_tokens") == 0
         assert evts[0].payload.get("output_tokens") == 0
 
+    def test_stop_falls_back_to_zero_when_transcript_empty_after_retries(
+        self, tmp_path: Path, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = _seed_worker(tmp_db)
+        monkeypatch.setenv("ORCHESTRA_WORKER_ID", "w1")
+        monkeypatch.setenv("ORCHESTRA_STATE_DB", str(tmp_db))
+        transcript = tmp_path / "empty.jsonl"
+        transcript.write_text("")
+        payload = {"transcript_path": str(transcript)}
+        rc = hooks.dispatch("Stop", stdin_text=json.dumps(payload))
+        assert rc == 0
+        evts = [e for e in state.list_events(conn, worker_id="w1")
+                if e.kind == "turn_complete"]
+        assert len(evts) == 1
+        assert evts[0].payload.get("input_tokens") == 0
+
     def test_internal_error_records_hook_error_and_returns_zero(
         self, tmp_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -228,3 +246,40 @@ class TestTypedDispatch:
         assert rc == 0  # NEVER non-zero
         err_log = tmp_db.parent / "hook-errors.log"
         assert err_log.exists()
+
+
+class TestUsageFromTranscriptRetry:
+    def test_retry_sees_late_write(self, tmp_path: Path) -> None:
+        # Prove the retry loop picks up a line appended after the initial read.
+        # Timeline: thread starts reading an empty file; main sleeps 0.6 s then
+        # appends a valid line; thread retries twice (0.5 s each) and finds it
+        # on the second retry (~1.0 s total). Wall-clock budget: well under 2 s.
+        transcript = tmp_path / "late.jsonl"
+        transcript.write_text("")
+
+        result: list[dict[str, int] | None] = []
+
+        def call_helper() -> None:
+            result.append(hooks._usage_from_transcript(str(transcript)))
+
+        t = threading.Thread(target=call_helper, daemon=True)
+        t.start()
+        time.sleep(0.6)
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 42,
+                    "output_tokens": 7,
+                    "cache_read_input_tokens": 3,
+                    "cache_creation_input_tokens": 1,
+                },
+            },
+        })
+        with transcript.open("a") as fh:
+            fh.write(line + "\n")
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "helper did not finish within 2 s"
+        assert result == [{"input_tokens": 42, "output_tokens": 7,
+                           "cache_read_tokens": 3, "cache_creation_tokens": 1}]
