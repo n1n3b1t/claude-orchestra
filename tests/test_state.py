@@ -226,6 +226,18 @@ class TestSchemaUpgrade:
         assert got.worktree == "myworktree"
 
 
+class TestNoInitTolerance:
+    def test_release_worker_resources_without_schema_is_noop(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        result = state.release_worker_resources(conn, worker_id="any")
+        assert result == 0
+
+    def test_acquire_resource_without_schema_returns_false(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        result = state.acquire_resource(conn, "res", "w1", blocking=False)
+        assert result is False
+
+
 class TestResourceLocks:
     def test_acquire_succeeds_when_no_lock(self, tmp_db: Path) -> None:
         conn = _open(tmp_db)
