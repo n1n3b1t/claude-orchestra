@@ -120,10 +120,20 @@ def now_iso() -> str:
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), isolation_level=None)  # autocommit
     conn.row_factory = sqlite3.Row
-    # busy_timeout must be set before journal_mode=WAL so concurrent WAL
-    # switches wait rather than immediately raising "database is locked".
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    # PRAGMA journal_mode=WAL is exclusive and busy_timeout does not apply, so
+    # concurrent first-time connections can collide. Skip the switch when the
+    # file is already WAL, and retry briefly otherwise.
+    mode_row = conn.execute("PRAGMA journal_mode").fetchone()
+    if (mode_row[0] if mode_row else "").lower() != "wal":
+        for attempt in range(5):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 4:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
