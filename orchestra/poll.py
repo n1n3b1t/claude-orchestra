@@ -70,6 +70,24 @@ def _new_event_count(
     return int(conn.execute(sql, args).fetchone()[0])
 
 
+def _token_summary_for(conn: sqlite3.Connection, worker_id: str) -> tuple[int, int, int]:
+    """Return (input_tokens, output_tokens, cache_read_tokens) summed across turn_complete."""
+    total_in = total_out = total_cache = 0
+    rows = conn.execute(
+        "SELECT payload FROM events WHERE worker_id = ? AND kind = 'turn_complete'",
+        (worker_id,),
+    ).fetchall()
+    for (payload_raw,) in rows:
+        try:
+            p = json.loads(payload_raw) if payload_raw else {}
+        except Exception:  # noqa: BLE001
+            continue
+        total_in += int(p.get("input_tokens") or 0)
+        total_out += int(p.get("output_tokens") or 0)
+        total_cache += int(p.get("cache_read_tokens") or 0)
+    return total_in, total_out, total_cache
+
+
 def _cost_usd_for(conn: sqlite3.Connection, worker_id: str, fallback_model: str) -> float:
     """Sum turn_complete token costs for a worker.
 
@@ -102,12 +120,19 @@ def _last_status_for(conn: sqlite3.Connection, worker_id: str) -> str | None:
     if row is None:
         return None
     try:
-        return json.loads(row[0]).get("progress")
+        val = json.loads(row[0]).get("progress")
+        return val if isinstance(val, str) else None
     except Exception:  # noqa: BLE001
         return None
 
 
-def render_snapshot(db: Path, *, since_id: int, include_tools: bool = False) -> str:
+def render_snapshot(
+    db: Path,
+    *,
+    since_id: int,
+    include_tools: bool = False,
+    cost_mode: str = "tokens",
+) -> str:
     """Render a markdown state snapshot for engineers."""
     conn = state.connect(db)
     try:
@@ -118,8 +143,13 @@ def render_snapshot(db: Path, *, since_id: int, include_tools: bool = False) -> 
         for w in engineers:
             n = _new_event_count(conn, w.id, since_id, include_tools)
             last = _last_status_for(conn, w.id) or "(none)"
-            usd = _cost_usd_for(conn, w.id, w.model)
-            lines.append(f"| {w.id} | {w.status} | {n} | ${usd:>7.2f} | {last} |")
+            if cost_mode == "dollars":
+                usd = _cost_usd_for(conn, w.id, w.model)
+                cost_str = f"${usd:>7.2f}"
+            else:
+                inp, out, cache = _token_summary_for(conn, w.id)
+                cost_str = cost_mod.format_tokens(inp, out, cache)
+            lines.append(f"| {w.id} | {w.status} | {n} | {cost_str} | {last} |")
         escs = state.list_open_escalations(conn)
         if escs:
             lines.append("")
@@ -141,6 +171,7 @@ def poll(
     timeout: float,
     poll_interval_s: float = 0.5,
     include_tools: bool = False,
+    cost_mode: str = "tokens",
 ) -> tuple[int, str]:
     """Block up to `timeout`s waiting for a new event, then return (new_max_id, snapshot)."""
     deadline = time.monotonic() + timeout
@@ -151,9 +182,11 @@ def poll(
         finally:
             conn.close()
         if current_max > since_id:
-            return current_max, render_snapshot(db, since_id=since_id,
-                                                include_tools=include_tools)
+            return current_max, render_snapshot(
+                db, since_id=since_id, include_tools=include_tools, cost_mode=cost_mode,
+            )
         if time.monotonic() >= deadline:
-            return current_max, render_snapshot(db, since_id=since_id,
-                                                include_tools=include_tools)
+            return current_max, render_snapshot(
+                db, since_id=since_id, include_tools=include_tools, cost_mode=cost_mode,
+            )
         time.sleep(min(poll_interval_s, max(0.0, deadline - time.monotonic())))

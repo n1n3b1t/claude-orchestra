@@ -106,6 +106,33 @@ class TestStatus:
         assert "w1" in result.output
         assert "working" in result.output
 
+    def test_default_shows_tokens(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Default cost mode is tokens: output contains token summary, not $."""
+        _init_in(tmp_path, monkeypatch)
+        db = tmp_path / ".orchestra" / "state.db"
+        conn = state.connect(db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="orch-x:w1",
+        )
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        # Zero tokens → compact tokens format
+        assert "0/0 cache=0" in result.output
+
+    def test_cost_mode_dollars_shows_dollar(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """--cost-mode dollars preserves $X.XX output."""
+        _init_in(tmp_path, monkeypatch)
+        db = tmp_path / ".orchestra" / "state.db"
+        conn = state.connect(db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="orch-x:w1",
+        )
+        result = runner.invoke(app, ["status", "--cost-mode", "dollars"])
+        assert result.exit_code == 0
+        assert "$" in result.output
+
     def test_worker_detail(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         _init_in(tmp_path, monkeypatch)
         db = tmp_path / ".orchestra" / "state.db"
