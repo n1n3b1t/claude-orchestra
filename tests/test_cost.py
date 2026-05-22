@@ -51,3 +51,43 @@ class TestCostFor:
     def test_unknown_model_uses_opus_rate(self) -> None:
         # Same as Opus: $15 in / $75 out.
         assert cost.cost_for("gpt-4", 1_000_000, 0) == pytest.approx(15.0)
+
+
+class TestFormatTokens:
+    def test_k_suffix(self) -> None:
+        assert cost.format_tokens(42_000, 8_000, 180_000) == "42k/8k cache=180k"
+
+    def test_all_zero(self) -> None:
+        assert cost.format_tokens(0, 0, 0) == "0/0 cache=0"
+
+    def test_mixed_m_k(self) -> None:
+        assert cost.format_tokens(1_500_000, 250_000, 12_000_000) == "1.5M/250k cache=12M"
+
+    def test_below_1k_verbatim(self) -> None:
+        assert cost.format_tokens(950, 100, 0) == "950/100 cache=0"
+
+    def test_exactly_1k(self) -> None:
+        assert cost.format_tokens(1_000, 1_000, 1_000) == "1k/1k cache=1k"
+
+    def test_exactly_1m_one_decimal(self) -> None:
+        # 1_000_000 is ≥1M and <10M → one decimal place
+        assert cost.format_tokens(1_000_000, 0, 0) == "1.0M/0 cache=0"
+
+    def test_exactly_10m_no_decimal(self) -> None:
+        # 10_000_000 is ≥10M → no decimal
+        assert cost.format_tokens(10_000_000, 0, 0) == "10M/0 cache=0"
+
+    def test_large_values(self) -> None:
+        assert cost.format_tokens(100_000_000, 50_000_000, 200_000_000) == "100M/50M cache=200M"
+
+    @pytest.mark.parametrize("n, expected_prefix", [
+        (999, "999"),
+        (1_000, "1k"),
+        (999_999, "999k"),
+        (1_000_000, "1.0M"),
+        (9_900_000, "9.9M"),
+        (10_000_000, "10M"),
+    ])
+    def test_boundary_values_for_input(self, n: int, expected_prefix: str) -> None:
+        result = cost.format_tokens(n, 0, 0)
+        assert result.startswith(expected_prefix + "/")

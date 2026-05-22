@@ -15,6 +15,23 @@ def _open(tmp_db: Path) -> sqlite3.Connection:
     return conn
 
 
+class TestNoSchemaTolerance:
+    def test_release_worker_resources_no_schema_is_noop(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        result = state.release_worker_resources(conn, worker_id="anything")
+        assert result == 0
+
+    def test_acquire_resource_no_schema_returns_false(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        result = state.acquire_resource(conn, "device", "w1", blocking=False)
+        assert result is False
+
+    def test_release_resource_no_schema_returns_false(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        result = state.release_resource(conn, "device", "w1")
+        assert result is False
+
+
 class TestBlockingSemantics:
     def test_acquire_blocking_unblocks_when_released(self, tmp_db: Path) -> None:
         """Blocking acquire returns True once the holder releases the lock."""

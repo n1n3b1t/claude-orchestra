@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.3 — model fix + DX trio + closeout (2026-05-22)
+
+**Closeout batch (four issues, all orchestrated):**
+
+- **#32 mission lint false-positive** — brief-not-found now produces a warning by default; `--strict` flag promotes back to error. Unblocks missions where briefs are written by the PM at runtime.
+- **#33 cost flush race** — `hooks._extract_token_usage` now retries (3 attempts, 500ms each) when the transcript JSONL is empty at hook-fire time. Worktree-engineers now capture cost; the 4-runs-in-a-row correlation pattern is resolved.
+- **#40 tokens column** — default `orchestra status` now shows `42k/8k cache=180k` instead of API-list-price `$X.XX`. `--cost-mode dollars` opt-in for the legacy display. Subscription-correctness fix.
+- **#41 full-suite flakiness** — `release_worker_resources` and friends tolerate missing `resource_locks` table; PM follow-up also patched a residual WAL-race in `state.connect` (busy_timeout PRAGMA must precede journal_mode=WAL). 5/5 pytest runs at 296 tests now stable.
+
+**Deferred to v2.4:** #43 (PM shortcut behavior — design discussion), #44 (mission YAML DAG — bigger architectural).
+
+**Bonus:** preexisting `poll.py:105` mypy error vanished (#40's poll.py rewrite incidentally fixed it). Strict mypy on `state.py`/`tmux.py` and loose mypy on `orchestra/` both fully clean.
+
+**Tests:** 296 (up from 264 at v2.3 DX-trio close).
+
 ## v2.3 — model fix + DX trio (2026-05-21)
 
 **Critical fix:** `orchestra spawn` was sending `/<model>` to the worker pane to switch model — but Claude Code's slash command is actually `/model <name>`. Every orchestra run since v0 silently ran every worker on Opus 1M, regardless of `--model sonnet` / `--model haiku`. Fix in `orchestra/spawn.py:266` (closes #38). User-spotted from `.orchestra/hook-debug.log` model-field inspection.

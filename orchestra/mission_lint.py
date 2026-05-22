@@ -49,7 +49,9 @@ def _parse_specs(block: str, start_line: int) -> list[tuple[int, dict[str, Any]]
     return specs
 
 
-def lint(mission_path: Path, project_root: Path | None = None) -> list[Finding]:
+def lint(
+    mission_path: Path, project_root: Path | None = None, strict: bool = False
+) -> list[Finding]:
     """Run all checks; return findings."""
     if project_root is None:
         project_root = mission_path.parent.parent  # mission lives under <root>/.orchestra/briefs/
@@ -69,8 +71,9 @@ def lint(mission_path: Path, project_root: Path | None = None) -> list[Finding]:
             if "brief" in spec:
                 p = (project_root / spec["brief"]).resolve()
                 if not p.is_file():
+                    brief_severity = "error" if strict else "warning"
                     findings.append(
-                        Finding("error", f"brief not found: {spec['brief']}", line_no)
+                        Finding(brief_severity, f"brief not found: {spec['brief']}", line_no)
                     )
             if "role" in spec:
                 try:

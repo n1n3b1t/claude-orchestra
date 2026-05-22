@@ -60,16 +60,25 @@ class TestSnapshot:
 
     def test_cost_column_header_present(self, tmp_db: Path) -> None:
         _setup(tmp_db)
+        # Default is tokens mode — header still says "cost".
         out = poll.render_snapshot(tmp_db, since_id=0)
-        # Header row exposes the new column.
         assert "cost" in out.splitlines()[0]
-        # Zero-cost rendering still shows a `$` prefix so columns align.
+        # Zero tokens renders as "0/0 cache=0" (tokens mode default).
+        for engineer in ("backend", "frontend"):
+            line = next(ln for ln in out.splitlines() if engineer in ln)
+            assert "0/0 cache=0" in line
+
+    def test_cost_column_header_present_dollars(self, tmp_db: Path) -> None:
+        _setup(tmp_db)
+        # Explicit dollars mode: zero-cost still shows `$` prefix.
+        out = poll.render_snapshot(tmp_db, since_id=0, cost_mode="dollars")
+        assert "cost" in out.splitlines()[0]
         for engineer in ("backend", "frontend"):
             line = next(ln for ln in out.splitlines() if engineer in ln)
             assert "$" in line
 
     def test_cost_column_differs_per_worker(self, tmp_db: Path) -> None:
-        """Two workers with different turn_complete token totals → different $."""
+        """Two workers with different turn_complete token totals → different $ (dollars mode)."""
         _setup(tmp_db)
         conn = state.connect(tmp_db)
         # backend: 1M output tokens → sonnet $15/M out → $15.00
@@ -83,11 +92,25 @@ class TestSnapshot:
             input_tokens=1_000_000, output_tokens=0,
         )
         conn.close()
-        out = poll.render_snapshot(tmp_db, since_id=0)
+        # Use cost_mode="dollars" to preserve dollar-amount assertions.
+        out = poll.render_snapshot(tmp_db, since_id=0, cost_mode="dollars")
         backend_line = next(ln for ln in out.splitlines() if "backend" in ln)
         frontend_line = next(ln for ln in out.splitlines() if "frontend" in ln)
         assert "$  15.00" in backend_line
         assert "$   3.00" in frontend_line
+
+    def test_cost_column_tokens_mode(self, tmp_db: Path) -> None:
+        """Default tokens mode shows compact token summary."""
+        _setup(tmp_db)
+        conn = state.connect(tmp_db)
+        state.record_event(
+            conn, "turn_complete", worker_id="backend",
+            input_tokens=42_000, output_tokens=8_000,
+        )
+        conn.close()
+        out = poll.render_snapshot(tmp_db, since_id=0)
+        backend_line = next(ln for ln in out.splitlines() if "backend" in ln)
+        assert "42k/8k cache=0" in backend_line
 
     def test_cost_payload_model_overrides_worker_model(self, tmp_db: Path) -> None:
         """turn_complete payload `model` should win over the workers.model column."""
@@ -99,7 +122,8 @@ class TestSnapshot:
             input_tokens=1_000_000, output_tokens=0, model="claude-opus-4-7",
         )
         conn.close()
-        out = poll.render_snapshot(tmp_db, since_id=0)
+        # Use cost_mode="dollars" to assert opus rate ($15/M in, not sonnet's $3/M).
+        out = poll.render_snapshot(tmp_db, since_id=0, cost_mode="dollars")
         backend_line = next(ln for ln in out.splitlines() if "backend" in ln)
         # opus input rate is $15/M, not sonnet's $3/M.
         assert "$  15.00" in backend_line

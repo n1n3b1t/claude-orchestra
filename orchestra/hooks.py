@@ -21,6 +21,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,37 +99,44 @@ def _usage_from_transcript(transcript_path: str) -> dict[str, int] | None:
 
     Claude Code writes cumulative usage on the final assistant message of
     each turn, so the last `message.usage` line is the right one to bill.
+
+    Retries up to 2 times (3 attempts total) with a 0.5 s delay when the
+    file exists but contains zero assistant-with-usage lines — the transcript
+    may not be fully flushed by the time Stop fires.
     """
     p = Path(transcript_path)
     if not p.is_file():
         return None
-    last_usage: dict[str, Any] | None = None
-    try:
-        with p.open() as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                msg = entry.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                # Only assistant messages carry usage worth billing.
-                if entry.get("type") != "assistant" and msg.get("role") != "assistant":
-                    continue
-                usage = msg.get("usage")
-                if isinstance(usage, dict):
-                    last_usage = usage
-    except OSError:
-        return None
-    if last_usage is None:
-        return None
-    return _usage_from_dict(last_usage)
+    for attempt in range(3):
+        if attempt > 0:
+            time.sleep(0.5)
+        last_usage: dict[str, Any] | None = None
+        try:
+            with p.open() as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    msg = entry.get("message")
+                    if not isinstance(msg, dict):
+                        continue
+                    # Only assistant messages carry usage worth billing.
+                    if entry.get("type") != "assistant" and msg.get("role") != "assistant":
+                        continue
+                    usage = msg.get("usage")
+                    if isinstance(usage, dict):
+                        last_usage = usage
+        except OSError:
+            return None
+        if last_usage is not None:
+            return _usage_from_dict(last_usage)
+    return None
 
 
 def _extract_token_usage(payload: dict[str, Any]) -> dict[str, int]:

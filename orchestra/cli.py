@@ -158,7 +158,10 @@ def spawn_batch_command(
 
 
 @app.command()
-def status(worker: str | None = typer.Option(None, "--worker")) -> None:
+def status(
+    worker: str | None = typer.Option(None, "--worker"),
+    cost_mode: str = typer.Option("tokens", "--cost-mode", help="tokens (default) or dollars."),
+) -> None:
     """Print worker status table; with --worker, print detail."""
     with _open_db() as conn:
         if worker:
@@ -178,12 +181,19 @@ def status(worker: str | None = typer.Option(None, "--worker")) -> None:
             if not rows:
                 typer.echo("(no workers)")
                 return
-            from orchestra import poll as poll_mod  # avoid circular at import time
+            # local import to avoid circular at import time
+            from orchestra import cost as cost_mod
+            from orchestra import poll as poll_mod
             for w in rows:
-                usd = poll_mod._cost_usd_for(conn, w.id, w.model)
+                if cost_mode == "dollars":
+                    usd = poll_mod._cost_usd_for(conn, w.id, w.model)
+                    cost_str = f"${usd:>6.2f}"
+                else:
+                    inp, out, cache = poll_mod._token_summary_for(conn, w.id)
+                    cost_str = cost_mod.format_tokens(inp, out, cache)
                 msg = w.progress or ""
                 typer.echo(
-                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  ${usd:>6.2f}  {msg}"
+                    f"{w.id:>8}  {w.status:<12}  turns={w.turns:<4}  {cost_str}  {msg}"
                 )
 
 
@@ -289,13 +299,16 @@ def run_command(
 def mission_command(
     action: str = typer.Argument(..., metavar="ACTION", help="lint"),
     path: Path = typer.Argument(..., metavar="MISSION_MD"),  # noqa: B008
+    strict: bool = typer.Option(
+        False, "--strict", help="Promote brief-not-found from warning to error."
+    ),
 ) -> None:
     """Mission utilities. Today: `orchestra mission lint <path>`."""
     if action != "lint":
         typer.echo(f"unknown action: {action}", err=True)
         raise typer.Exit(2)
     from orchestra import mission_lint
-    findings = mission_lint.lint(path)
+    findings = mission_lint.lint(path, strict=strict)
     typer.echo(mission_lint.render(findings))
     if mission_lint.has_errors(findings):
         raise typer.Exit(2)

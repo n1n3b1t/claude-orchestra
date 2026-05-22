@@ -120,8 +120,20 @@ def now_iso() -> str:
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), isolation_level=None)  # autocommit
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    # PRAGMA journal_mode=WAL is exclusive and busy_timeout does not apply, so
+    # concurrent first-time connections can collide. Skip the switch when the
+    # file is already WAL, and retry briefly otherwise.
+    mode_row = conn.execute("PRAGMA journal_mode").fetchone()
+    if (mode_row[0] if mode_row else "").lower() != "wal":
+        for attempt in range(5):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 4:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -414,6 +426,11 @@ def acquire_resource(
                 (name, worker_id, now_iso()),
             )
             return True
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                # Table absent means schema not initialized; treat as unheld.
+                return False
+            raise
         except sqlite3.IntegrityError:
             if not blocking:
                 return False
@@ -426,19 +443,29 @@ def release_resource(
     conn: sqlite3.Connection, name: str, worker_id: str
 ) -> bool:
     """DELETE WHERE name=? AND worker_id=?. Returns True iff a row was deleted."""
-    cur = conn.execute(
-        "DELETE FROM resource_locks WHERE name = ? AND worker_id = ?",
-        (name, worker_id),
-    )
-    return cur.rowcount > 0
+    try:
+        cur = conn.execute(
+            "DELETE FROM resource_locks WHERE name = ? AND worker_id = ?",
+            (name, worker_id),
+        )
+        return cur.rowcount > 0
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return False
+        raise
 
 
 def release_worker_resources(
     conn: sqlite3.Connection, worker_id: str
 ) -> int:
     """Release ALL locks held by worker_id. Returns count released."""
-    cur = conn.execute(
-        "DELETE FROM resource_locks WHERE worker_id = ?",
-        (worker_id,),
-    )
-    return cur.rowcount
+    try:
+        cur = conn.execute(
+            "DELETE FROM resource_locks WHERE worker_id = ?",
+            (worker_id,),
+        )
+        return cur.rowcount
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return 0
+        raise
