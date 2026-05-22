@@ -73,17 +73,33 @@ class TestHappyPath:
 
 
 class TestBriefChecks:
-    def test_missing_brief_is_error(self, tmp_path: Path) -> None:
+    def _root_with_missing_frontend(self, tmp_path: Path) -> tuple[Path, Path]:
         root = _project(tmp_path)
-        # backend brief exists, frontend does NOT
         (root / ".orchestra" / "briefs" / "backend.md").write_text("backend brief")
         mission = _write_mission(root, WELL_FORMED)
+        return root, mission
+
+    def test_missing_brief_default_is_warning(self, tmp_path: Path) -> None:
+        root, mission = self._root_with_missing_frontend(tmp_path)
 
         findings = mission_lint.lint(mission, project_root=root)
-        errors = [f for f in findings if f.severity == "error"]
-        assert any(
-            "brief not found" in f.message and "frontend" in f.message for f in errors
-        ), mission_lint.render(findings)
+        brief_findings = [
+            f for f in findings if "brief not found" in f.message and "frontend" in f.message
+        ]
+        assert len(brief_findings) == 1, mission_lint.render(findings)
+        assert brief_findings[0].severity == "warning"
+        assert not mission_lint.has_errors(findings), mission_lint.render(findings)
+
+    def test_missing_brief_strict_is_error(self, tmp_path: Path) -> None:
+        root, mission = self._root_with_missing_frontend(tmp_path)
+
+        findings = mission_lint.lint(mission, project_root=root, strict=True)
+        brief_findings = [
+            f for f in findings if "brief not found" in f.message and "frontend" in f.message
+        ]
+        assert len(brief_findings) == 1, mission_lint.render(findings)
+        assert brief_findings[0].severity == "error"
+        assert mission_lint.has_errors(findings), mission_lint.render(findings)
 
 
 class TestRoleChecks:
@@ -244,6 +260,48 @@ class TestInvalidJson:
         findings = mission_lint.lint(mission, project_root=root)
         assert any(
             f.severity == "error" and "invalid JSON" in f.message for f in findings
+        ), mission_lint.render(findings)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+class TestOtherChecksAlwaysError:
+    """unknown-role, missing-acceptance, duplicate-worktree are errors regardless of strict."""
+
+    def test_unknown_role_always_error(self, tmp_path: Path, strict: bool) -> None:
+        root = _project(tmp_path)
+        (root / ".orchestra" / "briefs" / "backend.md").write_text("b")
+        (root / ".orchestra" / "briefs" / "frontend.md").write_text("f")
+        body = WELL_FORMED.replace('"role": "engineer"', '"role": "nonexistent-role"', 1)
+        mission = _write_mission(root, body)
+
+        findings = mission_lint.lint(mission, project_root=root, strict=strict)
+        assert any(
+            f.severity == "error" and "nonexistent-role" in f.message for f in findings
+        ), mission_lint.render(findings)
+
+    def test_missing_acceptance_always_error(self, tmp_path: Path, strict: bool) -> None:
+        root = _project(tmp_path)
+        body = (
+            "# Mission: skeleton\n\n## TEAM\n\nteam stuff\n\nMentions worker_done so no warning.\n"
+        )
+        mission = _write_mission(root, body)
+
+        findings = mission_lint.lint(mission, project_root=root, strict=strict)
+        assert any(
+            f.severity == "error" and ("ACCEPTANCE" in f.message or "VERIFIER" in f.message)
+            for f in findings
+        ), mission_lint.render(findings)
+
+    def test_duplicate_worktree_always_error(self, tmp_path: Path, strict: bool) -> None:
+        root = _project(tmp_path)
+        (root / ".orchestra" / "briefs" / "backend.md").write_text("b")
+        (root / ".orchestra" / "briefs" / "frontend.md").write_text("f")
+        body = WELL_FORMED.replace('"worktree": "frontend"', '"worktree": "backend"')
+        mission = _write_mission(root, body)
+
+        findings = mission_lint.lint(mission, project_root=root, strict=strict)
+        assert any(
+            f.severity == "error" and "duplicate worktree" in f.message for f in findings
         ), mission_lint.render(findings)
 
 

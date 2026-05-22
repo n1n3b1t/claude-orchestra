@@ -289,13 +289,16 @@ def run_command(
 def mission_command(
     action: str = typer.Argument(..., metavar="ACTION", help="lint"),
     path: Path = typer.Argument(..., metavar="MISSION_MD"),  # noqa: B008
+    strict: bool = typer.Option(
+        False, "--strict", help="Promote brief-not-found from warning to error."
+    ),
 ) -> None:
     """Mission utilities. Today: `orchestra mission lint <path>`."""
     if action != "lint":
         typer.echo(f"unknown action: {action}", err=True)
         raise typer.Exit(2)
     from orchestra import mission_lint
-    findings = mission_lint.lint(path)
+    findings = mission_lint.lint(path, strict=strict)
     typer.echo(mission_lint.render(findings))
     if mission_lint.has_errors(findings):
         raise typer.Exit(2)
