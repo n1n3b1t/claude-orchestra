@@ -305,3 +305,123 @@ class TestRoleAndWorktree:
             branch=None, pane_target="s:pm", role="pm",
         )
         assert w.role == "pm"
+
+
+class TestMissionsTable:
+    def test_init_schema_creates_missions_table(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(missions)").fetchall()}
+        assert {"id", "slug", "mission_path", "status",
+                "exit_code", "started_at", "ended_at"} <= cols
+
+    def test_init_schema_adds_mission_id_to_workers(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(workers)").fetchall()}
+        assert "mission_id" in cols
+
+    def test_init_schema_idempotent(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        state.init_schema(conn)  # second call must not raise
+        rows = conn.execute("SELECT COUNT(*) FROM missions").fetchone()[0]
+        assert rows == 0
+
+
+class TestMissionsCRUD:
+    def test_create_and_get_by_slug(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        mid = state.create_mission(conn, slug="m1", mission_path="missions/m1/mission.md")
+        row = state.get_mission_by_slug(conn, "m1")
+        assert row is not None and row.id == mid and row.status == "running"
+
+    def test_get_running_mission(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        assert state.get_running_mission(conn) is None
+        state.create_mission(conn, slug="m1", mission_path="p")
+        running = state.get_running_mission(conn)
+        assert running is not None and running.slug == "m1"
+
+    def test_get_running_mission_raises_when_multiple(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        state.create_mission(conn, slug="m1", mission_path="p1")
+        state.create_mission(conn, slug="m2", mission_path="p2")
+        with pytest.raises(state.StateInvariantError):
+            state.get_running_mission(conn)
+
+    def test_update_mission_to_terminal(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        mid = state.create_mission(conn, slug="m1", mission_path="p")
+        state.update_mission(conn, mid, status="done", exit_code=0,
+                             ended_at=state.now_iso())
+        row = state.get_mission_by_slug(conn, "m1")
+        assert row is not None
+        assert row.status == "done" and row.exit_code == 0 and row.ended_at is not None
+
+    def test_list_missions_desc_by_started_at(self, tmp_db: Path) -> None:
+        import time
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        state.create_mission(conn, slug="m1", mission_path="p1")
+        time.sleep(0.01)
+        state.create_mission(conn, slug="m2", mission_path="p2")
+        rows = state.list_missions(conn)
+        assert [r.slug for r in rows] == ["m2", "m1"]
+
+
+class TestLegacyMigration:
+    def test_archives_legacy_workers_into_one_mission(self, tmp_db: Path) -> None:
+        import sqlite3 as _sqlite3
+        # Build a v2.3-shaped DB by hand: workers table without missions.
+        conn = _sqlite3.connect(str(tmp_db))
+        conn.executescript("""
+        CREATE TABLE workers (
+            id          TEXT PRIMARY KEY,
+            task        TEXT NOT NULL,
+            model       TEXT NOT NULL,
+            branch      TEXT,
+            pane_target TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            progress    TEXT,
+            turns       INTEGER NOT NULL DEFAULT 0,
+            started_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'engineer',
+            worktree    TEXT
+        );
+        INSERT INTO workers VALUES
+          ('pm', '', 'opus', NULL, 's:0.0', 'done', NULL, 5,
+           '2026-05-20T09:42:00Z', '2026-05-20T10:10:00Z', 'pm', NULL),
+          ('backend', '', 'sonnet', 'orch/backend', 's:0.1', 'done', NULL, 12,
+           '2026-05-20T09:45:00Z', '2026-05-20T10:08:00Z', 'engineer', 'backend');
+        """)
+        conn.commit()
+        conn.close()
+
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+
+        rows = state.list_missions(conn)
+        assert len(rows) == 1
+        legacy = rows[0]
+        assert legacy.status == "archived"
+        assert legacy.slug.startswith("legacy-")
+        assert legacy.mission_path == "(unknown)"
+        assert legacy.started_at == "2026-05-20T09:42:00Z"
+        assert legacy.ended_at == "2026-05-20T10:10:00Z"
+
+        worker_missions = {
+            row[0]: row[1]
+            for row in conn.execute("SELECT id, mission_id FROM workers").fetchall()
+        }
+        assert worker_missions == {"pm": legacy.id, "backend": legacy.id}
+
+    def test_no_legacy_row_on_fresh_db(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        assert state.list_missions(conn) == []
