@@ -103,7 +103,7 @@ class TestKanbanExampleAssets:
     )
     def test_kanban_role_loads(self, name: str) -> None:
         repo_root = Path(__file__).resolve().parent.parent
-        body, perms = _load_role(name, project_root=repo_root / "examples" / "kanban")
+        body, perms = _load_role(name, project_root=repo_root / "missions" / "kanban")
         assert body, f"{name}.md body is empty"
         # All kanban roles use engineer-shape vars
         assert "{worker_id}" in body
@@ -114,7 +114,7 @@ class TestKanbanExampleAssets:
     def test_reviewer_denies_write_and_push(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
         _, perms = _load_role(
-            "reviewer", project_root=repo_root / "examples" / "kanban"
+            "reviewer", project_root=repo_root / "missions" / "kanban"
         )
         deny = perms.get("deny", [])
         assert "Write" in deny
@@ -124,7 +124,7 @@ class TestKanbanExampleAssets:
     def test_architect_allows_write_denies_destructive(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
         _, perms = _load_role(
-            "architect", project_root=repo_root / "examples" / "kanban"
+            "architect", project_root=repo_root / "missions" / "kanban"
         )
         assert "Write" in perms.get("allow", [])
         deny = perms.get("deny", [])

@@ -256,12 +256,16 @@ class TestPreflight:
         )
         assert rc == 2
 
-    def test_existing_pm_row_exits_2(
+    def test_existing_pm_row_from_different_mission_does_not_block(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        """A pm worker row with mission_id=NULL (or a different mission) must
+        NOT block run_mission.  The old global pm-row guard is now scoped to
+        the current mission; a leftover row from a prior run (null mission_id)
+        should be ignored so that a new mission can start."""
         _init_git_repo(tmp_path)
         db = _init_orchestra(tmp_path)
-        # Seed a pre-existing 'pm' worker row.
+        # Seed a pre-existing 'pm' worker row with no mission_id (legacy / orphan).
         conn = state.connect(db)
         try:
             state.create_worker(
@@ -272,12 +276,26 @@ class TestPreflight:
             conn.close()
         mission = tmp_path / "mission.md"
         mission.write_text("# Mission\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+
+        def _emit_done() -> None:
+            time.sleep(0.3)
+            conn2 = state.connect(db)
+            try:
+                state.record_event(conn2, "worker_done", worker_id="pm")
+            finally:
+                conn2.close()
+
+        threading.Thread(target=_emit_done, daemon=True).start()
         rc = run_mod.run_mission(
             mission, model="opus", max_wallclock=30.0, max_activity=10.0,
         )
-        assert rc == 2
+        # The new scoped guard does not block on an unrelated pm row; mission proceeds.
+        assert rc == 0
 
     def test_not_a_git_repo_exits_2(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -396,6 +414,169 @@ class TestPayloadSummary:
         # Should not raise; falls through to the raw string.
         out = run_mod._summarize_payload("not json {")
         assert "not json" in out
+
+
+class TestRunMissionMissions:
+    """Wiring between run_mission and the missions table."""
+
+    def test_sequential_gate_blocks_when_running(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_git_repo(tmp_path)
+        mission = tmp_path / "mission.md"
+        mission.write_text("# Mission\nDo a thing.\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+
+        # Pre-create a running mission row.
+        conn = state.connect(db)
+        state.create_mission(conn, slug="busy", mission_path="(test)")
+        conn.close()
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+        monkeypatch.chdir(tmp_path)
+
+        rc = run_mod.run_mission(
+            mission, model="opus", max_wallclock=30.0, max_activity=10.0,
+        )
+        assert rc == 2
+        # Only the pre-existing mission should remain
+        conn = state.connect(db)
+        rows = state.list_missions(conn)
+        conn.close()
+        assert len(rows) == 1 and rows[0].slug == "busy"
+
+    def test_slug_inferred_from_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_git_repo(tmp_path)
+        (tmp_path / "missions" / "alpha").mkdir(parents=True)
+        mission = tmp_path / "missions" / "alpha" / "mission.md"
+        mission.write_text("# alpha\n")
+        # Use git add with relative path since _commit_mission only adds by filename
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "add", "missions/alpha/mission.md"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "add alpha mission"],
+            check=True,
+        )
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+        monkeypatch.chdir(tmp_path)
+
+        def _emit_done() -> None:
+            time.sleep(0.3)
+            conn = state.connect(db)
+            try:
+                state.record_event(conn, "worker_done", worker_id="pm")
+            finally:
+                conn.close()
+
+        threading.Thread(target=_emit_done, daemon=True).start()
+        rc = run_mod.run_mission(
+            Path("missions/alpha/mission.md"),
+            model="opus", max_wallclock=30.0, max_activity=10.0,
+        )
+        assert rc == 0
+        conn = state.connect(db)
+        row = state.get_mission_by_slug(conn, "alpha")
+        conn.close()
+        assert row is not None
+        assert row.status == "done"
+        assert row.exit_code == 0
+        assert row.ended_at is not None
+
+    def test_slug_auto_generated_for_non_missions_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_git_repo(tmp_path)
+        mission = tmp_path / "mission.md"
+        mission.write_text("# legacy mission\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+        monkeypatch.chdir(tmp_path)
+
+        def _emit_done() -> None:
+            time.sleep(0.3)
+            conn = state.connect(db)
+            try:
+                state.record_event(conn, "worker_done", worker_id="pm")
+            finally:
+                conn.close()
+
+        threading.Thread(target=_emit_done, daemon=True).start()
+        rc = run_mod.run_mission(
+            mission, model="opus", max_wallclock=30.0, max_activity=10.0,
+        )
+        assert rc == 0
+        conn = state.connect(db)
+        rows = state.list_missions(conn)
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0].slug.startswith("m-")
+        assert rows[0].status == "done"
+
+    def test_wallclock_watchdog_updates_mission_to_failed_124(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_git_repo(tmp_path)
+        mission = tmp_path / "mission.md"
+        mission.write_text("# Mission\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+        monkeypatch.chdir(tmp_path)
+
+        rc = run_mod.run_mission(
+            mission, model="opus", max_wallclock=0.5, max_activity=600.0,
+        )
+        assert rc == 124
+        conn = state.connect(db)
+        rows = state.list_missions(conn)
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0].status == "failed"
+        assert rows[0].exit_code == 124
+        assert rows[0].ended_at is not None
+
+    def test_activity_watchdog_updates_mission_to_failed_125(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_git_repo(tmp_path)
+        mission = tmp_path / "mission.md"
+        mission.write_text("# Mission\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+        monkeypatch.chdir(tmp_path)
+
+        rc = run_mod.run_mission(
+            mission, model="opus", max_wallclock=600.0, max_activity=0.5,
+        )
+        assert rc == 125
+        conn = state.connect(db)
+        rows = state.list_missions(conn)
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0].status == "failed"
+        assert rows[0].exit_code == 125
 
 
 class TestCliHelp:

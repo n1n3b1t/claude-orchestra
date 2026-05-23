@@ -488,7 +488,7 @@ class TestMergeReap:
         monkeypatch.setattr(cli.subprocess, "run", fake_run)
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: None,
+            lambda project_root, *, name, worker_id, mission_slug=None: None,
         )
         with cli._open_db() as conn:
             state.create_worker(
@@ -509,7 +509,7 @@ class TestMergeReap:
         _init_in(tmp_path, monkeypatch)
         from orchestra import worktree as wt_mod
         calls: list = []
-        def fake_remove(project_root, *, name, worker_id):  # noqa: ANN001
+        def fake_remove(project_root, *, name, worker_id, mission_slug=None):  # noqa: ANN001
             calls.append({"project_root": project_root,
                           "name": name, "worker_id": worker_id})
         monkeypatch.setattr(wt_mod, "remove", fake_remove)
@@ -561,7 +561,7 @@ class TestMergeReap:
         # Simulate the real worktree.remove's no-op-when-missing behaviour.
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: None,
+            lambda project_root, *, name, worker_id, mission_slug=None: None,
         )
         with cli._open_db() as conn:
             state.create_worker(
@@ -607,7 +607,7 @@ class TestReapDefault:
         remove_calls: list[dict[str, object]] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(
                 {"project_root": project_root, "name": name, "worker_id": worker_id}
             ),
         )
@@ -638,7 +638,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         self._seed("backend")
         result = runner.invoke(app, ["merge", "backend"])
@@ -669,7 +669,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         for wid in ("backend", "web", "cli"):
             self._seed(wid)
@@ -715,7 +715,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         self._seed("backend")
         result = runner.invoke(app, ["merge", "backend", "--keep"])
@@ -741,7 +741,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         for wid in ("backend", "web"):
             self._seed(wid)
@@ -756,3 +756,109 @@ class TestReapDefault:
             ]
         assert "merge_ok" in backend_kinds
         assert "worktree_reaped" not in backend_kinds
+
+
+class TestMissionCommands:
+    """Integration tests for orchestra mission new/list/show/run."""
+
+    def _init_project(self, tmp_path: Path) -> None:
+        from orchestra import state
+        (tmp_path / ".orchestra").mkdir()
+        conn = state.connect(tmp_path / ".orchestra" / "state.db")
+        state.init_schema(conn)
+        conn.close()
+
+    def test_mission_new_creates_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "new", "alpha"])
+        assert res.exit_code == 0, res.output
+        assert (tmp_path / "missions" / "alpha" / "mission.md").exists()
+        assert (tmp_path / "missions" / "alpha" / "verifier.sh").exists()
+
+    def test_mission_new_rejects_bad_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "new", "BAD-SLUG"])
+        assert res.exit_code == 2
+
+    def test_mission_list_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "list"])
+        assert res.exit_code == 0
+        assert "(no missions yet)" in res.output
+
+    def test_mission_list_with_running_row_bold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra import state
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        conn = state.connect(tmp_path / ".orchestra" / "state.db")
+        state.create_mission(conn, slug="m1", mission_path="missions/m1/mission.md")
+        conn.close()
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "list"])
+        assert res.exit_code == 0
+        assert "**m1**" in res.output
+
+    def test_mission_show_unknown_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "show", "nope"])
+        assert res.exit_code == 2
+
+    def test_mission_run_missing_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "run", "ghost"])
+        assert res.exit_code == 2
+        assert "does not exist" in res.output
+
+    def test_mission_lint_still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression — the existing `mission lint` command must still work
+        after the subgroup refactor."""
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        m = tmp_path / "mission.md"
+        m.write_text("# Mission: hello\n\n## Acceptance\n- thing\n\n"
+                     "## Team\n- engineer\n\nworker_done\n")
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "lint", str(m)])
+        assert res.exit_code == 0, res.output

@@ -93,66 +93,47 @@ Expected: `OK`.
 
 ## 4. Write a mission file
 
-**What:** Drop a mission file at `.orchestra/mission.md`. It tells the PM what
-to build, what "done" looks like, and which engineer roles to spawn. The
-template below is a generic starting point — replace the bracketed
-placeholders.
+**What:** Scaffold a new mission under `missions/<slug>/`. Replace `<slug>`
+with a short, lowercase name (e.g. `urlshortener`, `kanban-v2`). The slug
+becomes the mission identity in `state.db`, the worktree namespace
+(`worktrees/<slug>/<engineer>/`), and the branch prefix
+(`orch/<slug>/<engineer>`).
 
 **Run:**
 ```bash
-cat > .orchestra/mission.md <<'EOF'
-# Mission: <one-line goal>
+orchestra mission new my-first-mission
+$EDITOR missions/my-first-mission/mission.md
+```
 
-Replace this paragraph with a few sentences describing what you want built and
-any constraints (language, framework, existing files to respect).
+Fill in the placeholder goal, acceptance criteria, and team sections. Keep the
+`worker_done` reference — that is what tells the PM how to terminate.
 
-## Acceptance
-- <criterion 1>
-- <criterion 2>
-- <criterion 3>
+**Verify:**
+```bash
+orchestra mission lint missions/my-first-mission/mission.md
+```
 
-## Team
-Spawn the following engineers in their own worktrees:
-- engineer (sonnet) — implements the work.
+Expected: exit 0, no `warning:` lines.
 
-You mediate the API contract (if applicable), merge work into main, run the
-acceptance checks, and only emit `worker_done` when every acceptance check
-passes.
-EOF
+## 5. (Optional) Customize the verifier script
+
+**What:** `orchestra mission new` already scaffolds
+`missions/my-first-mission/verifier.sh` alongside the mission file. Open it
+and replace the placeholder checks with your real acceptance commands.
+
+**Run:**
+```bash
+$EDITOR missions/my-first-mission/verifier.sh
+# make sure it's executable (the scaffold sets this, but double-check):
+chmod +x missions/my-first-mission/verifier.sh
 ```
 
 **Verify:**
 ```bash
-orchestra mission lint .orchestra/mission.md
+bash missions/my-first-mission/verifier.sh; echo "exit=$?"
 ```
 
-Expected: exit 0 and no `warning:` lines. (The `worker_done` reference in the
-template silences the lint warning.)
-
-## 5. (Optional) Add a verifier script
-
-**What:** A shell script the PM can run to confirm acceptance. Optional — the
-mission body alone is enough to start. Skip this step if your acceptance checks
-are short enough to inline in the mission.
-
-**Run:**
-```bash
-cat > .orchestra/verifier.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-# Replace these checks with your real acceptance commands.
-# Exit 0 = pass, non-zero = fail.
-echo "verifier skeleton — replace with real checks"
-EOF
-chmod +x .orchestra/verifier.sh
-```
-
-**Verify:**
-```bash
-bash .orchestra/verifier.sh; echo "exit=$?"
-```
-
-Expected: `exit=0`.
+Expected: `exit=0` once you have filled in real checks.
 
 ## 6. Run the mission
 
@@ -166,7 +147,7 @@ fires. Default watchdogs: 90 min wall-clock, 10 min activity silence.
 
 **Run:**
 ```bash
-orchestra run .orchestra/mission.md
+orchestra mission run my-first-mission
 ```
 
 **Verify:** In a second terminal:
@@ -213,7 +194,7 @@ point:
 
 - Custom roles (multi-engineer topology, read-only reviewers): see
   [`README.md` — "Defining custom roles"](README.md#defining-custom-roles)
-  and `examples/kanban/`.
+  and `missions/kanban/`.
 - Pre-run setup steps (e.g. `adb connect`): [`CLAUDE.md` — "Pre-run
   hook"](CLAUDE.md#pre-run-hook).
 - How orchestra works under the hood: [`CLAUDE.md` — "Architecture — the big

@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.4 — multi-mission support (2026-05-23)
+
+- New `missions` table in `state.db`. Every `orchestra run` creates a mission row; workers carry a `mission_id` foreign key.
+- New CLI surface: `orchestra mission new <slug>`, `orchestra mission list`, `orchestra mission show <slug>`, `orchestra mission run <slug>` (shortcut for `orchestra run missions/<slug>/mission.md`).
+- Sequential gate: `orchestra run` refuses to start while another mission has `status='running'`. The error names the offending slug.
+- Worktrees and branches namespaced by mission slug: `worktrees/<slug>/<id>` on `orch/<slug>/<id>`. Two missions can reuse engineer names without git collisions.
+- Dashboard: top-of-page mission switcher; `/api/missions` endpoint; `/api/workers?mission=<slug>` filter.
+- Auto-migration: on first start against a v2.3 DB, all pre-existing worker rows are archived under a single `legacy-<ts>` mission with `status='archived'`. No manual SQL surgery required.
+- Examples relocated: `examples/urlshortener-*` → `missions/urlshortener/`; `examples/kanban/` → `missions/kanban/`. The `examples/` directory is removed.
+- Legacy `orchestra run <path>` is soft-deprecated: still works, generates a timestamp-derived slug when the path is not under `missions/<slug>/`.
+
 ## v2.3 — model fix + DX trio + closeout (2026-05-22)
 
 **Closeout batch (four issues, all orchestrated):**

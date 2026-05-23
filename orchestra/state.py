@@ -1,8 +1,11 @@
 """SQLite-backed state for claude-orchestra.
 
 Tables:
+- missions: one row per orchestrated mission; status lifecycle is
+  running → done | failed | aborted | archived.
 - workers: one row per spawned worker, mutated as the worker progresses.
   v1 columns: role ('engineer'|'pm'), worktree (None unless --worktree was set).
+  v2.4 column: mission_id (FK → missions.id).
 - events: append-only audit trail; payload is JSON. `events.kind` is free-form
   text — no schema migration is needed when a new kind is added.
 - escalations: blocking/non-blocking questions from workers to user / PM.
@@ -72,7 +75,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# ---- Exceptions ----
+
+class StateInvariantError(RuntimeError):
+    """Raised when a state-table invariant is violated (e.g. two running missions)."""
+
+
 # ---- Dataclasses ----
+
+@dataclass(frozen=True)
+class Mission:
+    id: int
+    slug: str
+    mission_path: str
+    status: str          # running | done | failed | aborted | archived
+    exit_code: int | None
+    started_at: str
+    ended_at: str | None
+
 
 @dataclass(frozen=True)
 class Worker:
@@ -88,6 +108,7 @@ class Worker:
     updated_at: str
     role: str = "engineer"
     worktree: str | None = None
+    mission_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +162,16 @@ def connect(db_path: Path) -> sqlite3.Connection:
 # ---- Schema ----
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS missions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug         TEXT NOT NULL UNIQUE,
+    mission_path TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    exit_code    INTEGER,
+    started_at   TEXT NOT NULL,
+    ended_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS missions_status ON missions(status);
 CREATE TABLE IF NOT EXISTS workers (
     id          TEXT PRIMARY KEY,
     task        TEXT NOT NULL,
@@ -187,7 +218,7 @@ def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    # Forward-compat: if a v0 DB pre-dates role/worktree, ALTER TABLE in.
+    # Forward-compat: if a v0 DB pre-dates role/worktree/mission_id, ALTER TABLE in.
     cols = _existing_columns(conn, "workers")
     if "role" not in cols:
         conn.execute(
@@ -195,6 +226,45 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
     if "worktree" not in cols:
         conn.execute("ALTER TABLE workers ADD COLUMN worktree TEXT")
+    if "mission_id" not in cols:
+        conn.execute(
+            "ALTER TABLE workers ADD COLUMN mission_id INTEGER REFERENCES missions(id)"
+        )
+    _migrate_legacy_workers(conn)
+
+
+def _migrate_legacy_workers(conn: sqlite3.Connection) -> None:
+    """One-shot: archive pre-mission worker rows under a single legacy-<ts> mission."""
+    missions_count = conn.execute("SELECT COUNT(*) FROM missions").fetchone()[0]
+    if missions_count > 0:
+        return
+    rows = conn.execute(
+        "SELECT MIN(started_at), MAX(updated_at) FROM workers WHERE mission_id IS NULL"
+    ).fetchone()
+    started_at, ended_at = rows[0], rows[1]
+    if started_at is None:
+        return  # workers table empty — fresh DB
+    # Build slug from the oldest worker's started_at, e.g. "legacy-20260520-0942"
+    slug = (
+        "legacy-"
+        + started_at.replace("-", "").replace(":", "").replace("T", "-")[:13]
+    )
+    conn.execute("BEGIN")
+    try:
+        cur = conn.execute(
+            "INSERT INTO missions (slug, mission_path, status, started_at, ended_at) "
+            "VALUES (?, ?, 'archived', ?, ?)",
+            (slug, "(unknown)", started_at, ended_at),
+        )
+        legacy_id = cur.lastrowid
+        conn.execute(
+            "UPDATE workers SET mission_id = ? WHERE mission_id IS NULL",
+            (legacy_id,),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 # ---- Workers ----
@@ -213,6 +283,7 @@ def _row_to_worker(row: sqlite3.Row) -> Worker:
         updated_at=row["updated_at"],
         role=row["role"],
         worktree=row["worktree"],
+        mission_id=row["mission_id"],
     )
 
 
@@ -227,16 +298,17 @@ def create_worker(
     status: str = "spawning",
     role: str = "engineer",
     worktree: str | None = None,
+    mission_id: int | None = None,
 ) -> Worker:
     ts = now_iso()
     conn.execute(
         """
         INSERT INTO workers (id, task, model, branch, pane_target,
                              status, progress, turns, started_at, updated_at,
-                             role, worktree)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?)
+                             role, worktree, mission_id)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?)
         """,
-        (id, task, model, branch, pane_target, status, ts, ts, role, worktree),
+        (id, task, model, branch, pane_target, status, ts, ts, role, worktree, mission_id),
     )
     got = get_worker(conn, id)
     assert got is not None  # just inserted
@@ -246,6 +318,22 @@ def create_worker(
 def get_worker(conn: sqlite3.Connection, worker_id: str) -> Worker | None:
     row = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
     return _row_to_worker(row) if row else None
+
+
+def get_mission_slug_for_worker(
+    conn: sqlite3.Connection, worker_id: str,
+) -> str | None:
+    """Resolve the mission slug for a worker, or None if no mission_id set."""
+    row = conn.execute(
+        "SELECT m.slug FROM workers w "
+        "LEFT JOIN missions m ON m.id = w.mission_id "
+        "WHERE w.id = ?",
+        (worker_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    slug: str | None = row[0]  # may be None if mission_id was NULL
+    return slug
 
 
 def list_workers(conn: sqlite3.Connection) -> list[Worker]:
@@ -280,6 +368,92 @@ def update_worker(
     cur = conn.execute(f"UPDATE workers SET {', '.join(sets)} WHERE id = ?", args)
     if cur.rowcount == 0:
         raise KeyError(f"worker {worker_id} not found")
+
+
+# ---- Missions ----
+
+def _row_to_mission(row: sqlite3.Row) -> Mission:
+    return Mission(
+        id=row["id"],
+        slug=row["slug"],
+        mission_path=row["mission_path"],
+        status=row["status"],
+        exit_code=row["exit_code"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+    )
+
+
+def create_mission(
+    conn: sqlite3.Connection,
+    *,
+    slug: str,
+    mission_path: str,
+    status: str = "running",
+) -> int:
+    ts = now_iso()
+    cur = conn.execute(
+        "INSERT INTO missions (slug, mission_path, status, started_at) "
+        "VALUES (?, ?, ?, ?)",
+        (slug, mission_path, status, ts),
+    )
+    conn.commit()
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+def get_mission_by_slug(conn: sqlite3.Connection, slug: str) -> Mission | None:
+    row = conn.execute("SELECT * FROM missions WHERE slug = ?", (slug,)).fetchone()
+    return _row_to_mission(row) if row is not None else None
+
+
+def get_running_mission(conn: sqlite3.Connection) -> Mission | None:
+    rows = conn.execute(
+        "SELECT * FROM missions WHERE status = 'running'"
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        slugs = ", ".join(r["slug"] for r in rows)
+        raise StateInvariantError(
+            f"more than one mission is 'running' ({slugs}); manual cleanup required"
+        )
+    return _row_to_mission(rows[0])
+
+
+def list_missions(conn: sqlite3.Connection) -> list[Mission]:
+    rows = conn.execute(
+        "SELECT * FROM missions ORDER BY started_at DESC, id DESC"
+    ).fetchall()
+    return [_row_to_mission(r) for r in rows]
+
+
+def update_mission(
+    conn: sqlite3.Connection,
+    mission_id: int,
+    *,
+    status: str | None = None,
+    exit_code: int | None = None,
+    ended_at: str | None = None,
+) -> None:
+    sets: list[str] = []
+    args: list[Any] = []
+    if status is not None:
+        sets.append("status = ?")
+        args.append(status)
+    if exit_code is not None:
+        sets.append("exit_code = ?")
+        args.append(exit_code)
+    if ended_at is not None:
+        sets.append("ended_at = ?")
+        args.append(ended_at)
+    if not sets:
+        raise ValueError("update_mission requires at least one field to update")
+    args.append(mission_id)
+    cur = conn.execute(f"UPDATE missions SET {', '.join(sets)} WHERE id = ?", args)
+    conn.commit()
+    if cur.rowcount == 0:
+        raise KeyError(f"mission {mission_id} not found")
 
 
 # ---- Events ----

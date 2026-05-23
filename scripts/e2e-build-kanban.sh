@@ -33,19 +33,19 @@ mkdir -p "$PROJECT_DIR"
   && git init -q -b main \
   && git config user.email "orch@local" \
   && git config user.name "orch" \
-  && mkdir -p docs examples/kanban \
-  && cp "$REPO_ROOT/examples/kanban/verifier.sh" examples/kanban/verifier.sh \
-  && chmod +x examples/kanban/verifier.sh \
+  && mkdir -p docs missions/kanban \
+  && cp "$REPO_ROOT/missions/kanban/verifier.sh" missions/kanban/verifier.sh \
+  && chmod +x missions/kanban/verifier.sh \
   && printf '.orchestra/\nworktrees/\n' > .gitignore \
-  && git add examples/kanban/verifier.sh .gitignore \
+  && git add missions/kanban/verifier.sh .gitignore \
   && git commit -q -m "seed: kanban verifier + .gitignore" )
 
 ( cd "$PROJECT_DIR" && "$REPO_ROOT/.venv/bin/orchestra" init )
 
 # Copy mission + roles into the target project's .orchestra/
 mkdir -p "$PROJECT_DIR/.orchestra/briefs" "$PROJECT_DIR/.orchestra/roles"
-cp "$REPO_ROOT/examples/kanban/mission.md" "$PROJECT_DIR/.orchestra/briefs/mission.md"
-cp "$REPO_ROOT/examples/kanban/.orchestra/roles/"*.md "$PROJECT_DIR/.orchestra/roles/"
+cp "$REPO_ROOT/missions/kanban/mission.md" "$PROJECT_DIR/.orchestra/briefs/mission.md"
+cp "$REPO_ROOT/missions/kanban/.orchestra/roles/"*.md "$PROJECT_DIR/.orchestra/roles/"
 
 # --- Watchdogs ---------------------------------------------------------
 DB="$PROJECT_DIR/.orchestra/state.db"
@@ -134,6 +134,6 @@ kill "$WALL" "$ACT" "$COST" 2>/dev/null || true
 
 # Final acceptance: the kanban verifier must exit 0 from inside the project.
 if [[ $RC -eq 0 ]]; then
-  ( cd "$PROJECT_DIR" && bash examples/kanban/verifier.sh ) || RC=$?
+  ( cd "$PROJECT_DIR" && bash missions/kanban/verifier.sh ) || RC=$?
 fi
 exit $RC

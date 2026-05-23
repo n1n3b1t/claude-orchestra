@@ -6,6 +6,8 @@
 <style>
   body { font: 14px/1.4 ui-sans-serif, system-ui; margin: 1rem; background: #0f1115; color: #e6e6e6; }
   h1 { font-size: 1.2rem; margin: 0 0 1rem 0; }
+  .nav { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+  .nav select { background: #181b23; color: #e6e6e6; border: 1px solid #2a2f3a; padding: 0.25rem 0.5rem; border-radius: 4px; }
   .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
   .card { background: #181b23; border: 1px solid #2a2f3a; border-radius: 6px; padding: 0.75rem 1rem; }
   .card h2 { font-size: 1rem; margin: 0 0 0.5rem 0; display: flex; gap: 0.5rem; align-items: baseline; }
@@ -22,11 +24,37 @@
 </style>
 </head>
 <body>
-<h1>claude-orchestra</h1>
+<div class="nav">
+  <h1 style="margin: 0">claude-orchestra</h1>
+  <label>Mission:
+    <select id="mission-select"><option value="">all</option></select>
+  </label>
+</div>
 <div id="grid" class="grid"></div>
 <script>
 const grid = document.getElementById('grid');
 const state = { workers: new Map() };
+
+async function loadMissions() {
+  const missions = await fetch('/api/missions').then(r => r.json());
+  const sel = document.getElementById('mission-select');
+  // Clear (except the "all" option)
+  sel.innerHTML = '<option value="">all</option>';
+  for (const m of missions) {
+    const opt = document.createElement('option');
+    opt.value = m.slug;
+    opt.textContent = `${m.slug} (${m.status})`;
+    sel.appendChild(opt);
+  }
+  // Default: running > most-recent > all
+  const running = missions.find(m => m.status === 'running');
+  if (running) {
+    sel.value = running.slug;
+  } else if (missions.length > 0) {
+    sel.value = missions[0].slug;  // list_missions sorted by started_at desc
+  }
+  sel.addEventListener('change', refresh);
+}
 
 function cardHtml(w, panes, events, escalations) {
   return `
@@ -49,7 +77,16 @@ function cardHtml(w, panes, events, escalations) {
 }
 
 async function refresh() {
-  const workers = await fetch('/api/workers').then(r => r.json());
+  const sel = document.getElementById('mission-select');
+  const mission = sel ? sel.value : '';
+  const url = mission ? `/api/workers?mission=${encodeURIComponent(mission)}` : '/api/workers';
+  const workers = await fetch(url).then(r => r.json());
+  // Clear the grid first so removed-by-filter cards disappear.
+  const visibleIds = new Set(workers.map(w => w.id));
+  for (const child of [...grid.children]) {
+    const id = child.id.replace('card-', '');
+    if (!visibleIds.has(id)) child.remove();
+  }
   for (const w of workers) {
     const detail = await fetch('/api/workers/' + w.id).then(r => r.json());
     const pane = await fetch('/api/workers/' + w.id + '/pane?lines=60').then(r => r.json());
@@ -71,7 +108,7 @@ async function answer(workerId, escId) {
 
 const es = new EventSource('/api/stream');
 es.onmessage = () => refresh();
-refresh();
+loadMissions().then(refresh);
 setInterval(refresh, 2000);
 </script>
 </body>

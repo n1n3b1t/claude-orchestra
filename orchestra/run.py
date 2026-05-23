@@ -7,7 +7,7 @@ fires.
 Exit codes:
     0   PM emitted `worker_done`.
     2   pre-flight failure (dirty repo, missing mission, missing .orchestra,
-        PM worker row already exists).
+        another mission is already running, or pm row conflict for this mission).
   124   wall-clock watchdog fired.
   125   activity watchdog (no new events) fired.
   126   loop exited without a terminal signal (defensive).
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import subprocess
 import time
 from pathlib import Path
@@ -23,6 +24,40 @@ from pathlib import Path
 from orchestra import spawn, state
 
 POLL_INTERVAL_S = 2.0
+
+_MISSION_PATH_RE = _re.compile(r"^missions/(?P<slug>[a-z0-9][a-z0-9-]*)/mission\.md$")
+
+
+def _resolve_slug(mission_path: Path, state_db_path: Path) -> str:
+    rel = str(mission_path)
+    m = _MISSION_PATH_RE.match(rel)
+    if m is not None:
+        return m.group("slug")
+    import datetime as dt
+    base = "m-" + dt.datetime.utcnow().strftime("%Y%m%d-%H%M")
+    conn = state.connect(state_db_path)
+    try:
+        candidate = base
+        n = 2
+        while state.get_mission_by_slug(conn, candidate) is not None:
+            candidate = f"{base}-{n}"
+            n += 1
+        return candidate
+    finally:
+        conn.close()
+
+
+def _close_mission(
+    state_db_path: Path, mission_id: int, *, status: str, exit_code: int
+) -> None:
+    conn = state.connect(state_db_path)
+    try:
+        state.update_mission(
+            conn, mission_id,
+            status=status, exit_code=exit_code, ended_at=state.now_iso(),
+        )
+    finally:
+        conn.close()
 
 
 def _is_git_repo(cwd: Path) -> bool:
@@ -93,6 +128,20 @@ def run_mission(
         print("[runner] error: run `orchestra init` first", flush=True)
         return 2
 
+    # ---- Pre-flight: sequential gate (no other mission already running) ----
+    seq_conn = state.connect(state_db_path)
+    try:
+        existing = state.get_running_mission(seq_conn)
+    finally:
+        seq_conn.close()
+    if existing is not None:
+        print(
+            f"[runner] error: mission {existing.slug!r} is still running; "
+            "finish or abort it first",
+            flush=True,
+        )
+        return 2
+
     # ---- Pre-flight: optional pre-run.sh hook ----
     pre_run = orch_dir / "pre-run.sh"
     if pre_run.exists() and os.access(pre_run, os.X_OK):
@@ -111,18 +160,38 @@ def run_mission(
             flush=True,
         )
 
-    # ---- Pre-flight: no existing pm row ----
+    # ---- Normalize mission path relative to project root ----
+    try:
+        relative = str(mission_path.relative_to(cwd))
+    except ValueError:
+        relative = str(mission_path)
+
+    # ---- Slug resolution ----
+    mission_slug = _resolve_slug(Path(relative), state_db_path)
+
+    # ---- Create mission row (status='running') ----
+    mc = state.connect(state_db_path)
+    try:
+        mission_id = state.create_mission(
+            mc, slug=mission_slug, mission_path=relative,
+        )
+    finally:
+        mc.close()
+
+    # ---- Pre-flight: no existing pm row FOR THIS MISSION ----
     conn = state.connect(state_db_path)
     try:
-        existing = state.get_worker(conn, "pm")
+        existing_pm = conn.execute(
+            "SELECT id FROM workers WHERE id='pm' AND mission_id = ?",
+            (mission_id,),
+        ).fetchone()
     finally:
         conn.close()
-    if existing is not None:
-        print(
-            "[runner] error: a worker row for 'pm' already exists; "
-            "clean up state.db (or remove the row) and retry",
-            flush=True,
-        )
+    if existing_pm is not None:
+        # Cannot happen in normal flow; defensive guard.
+        print("[runner] error: pm row already exists for this mission", flush=True)
+        # Mark mission failed before returning
+        _close_mission(state_db_path, mission_id, status="failed", exit_code=2)
         return 2
 
     # ---- Compute session name (mirror cli._session_name_for) ----
@@ -153,6 +222,7 @@ def run_mission(
             role="pm",
             brief=mission_body,
             worktree_name=None,
+            mission_id=mission_id,
         )
     finally:
         spawn_conn.close()
@@ -180,16 +250,19 @@ def run_mission(
                     cursor = max(cursor, int(eid))
                     if wid == "pm" and kind == "worker_done":
                         print("[runner] pm worker_done — exiting", flush=True)
+                        _close_mission(state_db_path, mission_id, status="done", exit_code=0)
                         return 0
 
             now = time.monotonic()
             if now - wallclock_start > max_wallclock:
                 elapsed = int(now - wallclock_start)
                 print(f"[runner] wallclock_timeout after {elapsed}s", flush=True)
+                _close_mission(state_db_path, mission_id, status="failed", exit_code=124)
                 return 124
             if now - last_event_at > max_activity:
                 elapsed = int(now - last_event_at)
                 print(f"[runner] activity_timeout after {elapsed}s", flush=True)
+                _close_mission(state_db_path, mission_id, status="failed", exit_code=125)
                 return 125
 
             time.sleep(POLL_INTERVAL_S)
@@ -197,4 +270,5 @@ def run_mission(
         poll_conn.close()
 
     # Defensive: the loop has no break, but mypy + tests can hit this.
+    _close_mission(state_db_path, mission_id, status="failed", exit_code=126)  # pragma: no cover
     return 126  # pragma: no cover

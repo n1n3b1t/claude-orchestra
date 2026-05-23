@@ -737,6 +737,80 @@ class TestPermissionsWiring:
         assert not new_window_called["v"]
 
 
+class TestMissionIdInheritance:
+    """spawn_worker inherits mission_id from the running mission when not supplied."""
+
+    def _simple_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection,
+        db: Path, *, worker_id: str, mission_id: int | None = None,
+    ) -> None:
+        """Helper: stub out all tmux/wait calls and run spawn_worker."""
+        for fn, retval in [
+            ("ensure_session", None), ("new_window", f"s:{worker_id}"),
+            ("send_literal", None), ("send_enter", None),
+            ("send_multiline", None), ("capture", "❯ "),
+            ("is_idle", True),
+        ]:
+            monkeypatch.setattr(tmux, fn, lambda *a, _r=retval, **kw: _r)
+        monkeypatch.setattr(spawn, "_wait_idle_via_event", lambda *a, **k: True)
+        monkeypatch.setattr(spawn, "time", MagicMock(sleep=MagicMock()))
+        kwargs: dict = dict(
+            worker_id=worker_id, model="sonnet", task="t",
+            project_root=str(tmp_path), state_db=db, ctx_files=[],
+            session_name="orch-x",
+        )
+        if mission_id is not None:
+            kwargs["mission_id"] = mission_id
+        spawn.spawn_worker(conn, **kwargs)
+
+    def test_inherits_running_mission_when_mission_id_not_passed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        mid = state.create_mission(conn, slug="alpha", mission_path="p")
+
+        self._simple_spawn(tmp_path, monkeypatch, conn, db, worker_id="w1")
+
+        w = state.get_worker(conn, "w1")
+        assert w is not None
+        assert w.mission_id == mid
+        assert w.branch == "orch/alpha/w1"
+
+    def test_explicit_mission_id_is_respected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        mid = state.create_mission(conn, slug="beta", mission_path="p")
+
+        self._simple_spawn(tmp_path, monkeypatch, conn, db, worker_id="w1",
+                           mission_id=mid)
+
+        w = state.get_worker(conn, "w1")
+        assert w is not None
+        assert w.mission_id == mid
+        assert w.branch == "orch/beta/w1"
+
+    def test_no_mission_running_keeps_null_and_flat_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no mission exists, mission_id stays NULL and branch is flat."""
+        db = tmp_path / "state.db"
+        conn = state.connect(db)
+        state.init_schema(conn)
+        # No mission created → get_running_mission returns None
+
+        self._simple_spawn(tmp_path, monkeypatch, conn, db, worker_id="w1")
+
+        w = state.get_worker(conn, "w1")
+        assert w is not None
+        assert w.mission_id is None
+        assert w.branch == "orch/w1"
+
+
 class TestExclusiveResource:
     def test_spawn_worker_with_exclusive_resource_records_event(
         self, tmp_db: Path, fake_tmux: MagicMock, monkeypatch: pytest.MonkeyPatch

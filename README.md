@@ -50,10 +50,23 @@ To kick off a full PM-coordinated run from a mission file and block until
 the PM signals done (or a watchdog fires):
 
 ```
-orchestra run examples/urlshortener-mission.md
+orchestra mission new my-mission         # scaffolds missions/my-mission/
+$EDITOR missions/my-mission/mission.md
+orchestra mission run my-mission         # blocks until done or watchdog fires
 ```
 
-Place an executable `.orchestra/pre-run.sh` in your project to run setup steps before the PM spawns — for example, `adb connect <ip>` for on-device testing missions. A non-zero exit aborts the run before any API credits are spent.
+Each run creates a row in `state.db.missions` so you can browse history with
+`orchestra mission list` and inspect a specific mission with
+`orchestra mission show <slug>`.
+
+The legacy form `orchestra run <path-to-mission.md>` still works for any
+mission file (it auto-creates a mission row with a timestamp-derived slug when
+the path is not under `missions/<slug>/`), but new projects should use the
+`mission` subcommands.
+
+Place an executable `.orchestra/pre-run.sh` in your project to run setup steps
+before the PM spawns — for example, `adb connect <ip>` for on-device testing
+missions. A non-zero exit aborts the run before any API credits are spent.
 
 ## Defining custom roles
 
@@ -91,15 +104,16 @@ findings via `orchestra worker escalate --blocking --question "..."`.
 Spawn with: `orchestra spawn rev sonnet "" --role reviewer` (no
 `--worktree` — the reviewer reads main).
 
-See `examples/kanban/.orchestra/roles/` for a full multi-role example (architect / backend / web / cli / reviewer). The example uses the same `.orchestra/roles/` convention as a real project, so it doubles as a template for your own.
+See `missions/kanban/.orchestra/roles/` for a full multi-role example (architect / backend / web / cli / reviewer). The example uses the same `.orchestra/roles/` convention as a real project, so it doubles as a template for your own.
 
 ## Layout
 
 ```
 bin/
   claude-tmux-driver.sh   # send / read / wait / ask subcommands
-examples/
-  (empty — add round-trip demos here)
+missions/
+  urlshortener/           # URL-shortener mission + verifier (v1 acceptance test)
+  kanban/                 # Kanban app mission + multi-role example
 ```
 
 `~/bin/claude-tmux-driver.sh` is a symlink to the script in this repo, so it
