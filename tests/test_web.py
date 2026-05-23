@@ -140,3 +140,50 @@ class TestDashboard:
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "<html" in r.text.lower()
+
+
+class TestMissionEndpoints:
+    def test_api_missions_returns_list(self, client, monkeypatch, tmp_orch_dir):
+        from orchestra import state
+        # The fixture already seeded one worker; add two missions.
+        db = tmp_orch_dir / "state.db"
+        conn = state.connect(db)
+        state.create_mission(conn, slug="alpha", mission_path="missions/alpha/mission.md")
+        m_id = state.create_mission(conn, slug="beta", mission_path="missions/beta/mission.md")
+        state.update_mission(conn, m_id, status="done", exit_code=0,
+                             ended_at=state.now_iso())
+        conn.close()
+        r = client.get("/api/missions")
+        assert r.status_code == 200
+        slugs = {m["slug"] for m in r.json()}
+        assert {"alpha", "beta"} <= slugs
+
+    def test_api_workers_filtered_by_mission(self, client, tmp_orch_dir):
+        from orchestra import state
+        db = tmp_orch_dir / "state.db"
+        conn = state.connect(db)
+        # Two missions, two workers each.
+        a = state.create_mission(conn, slug="alpha", mission_path="p1")
+        b = state.create_mission(conn, slug="beta", mission_path="p2")
+        # Reuse the fixture's w1 by updating its mission_id
+        conn.execute("UPDATE workers SET mission_id = ? WHERE id = 'w1'", (a,))
+        state.create_worker(conn, id="w2", task="t", model="sonnet",
+                            branch="orch/beta/w2", pane_target="t:0.0",
+                            mission_id=b)
+        conn.close()
+        r = client.get("/api/workers?mission=alpha")
+        ids = {w["id"] for w in r.json()}
+        assert ids == {"w1"}
+        r = client.get("/api/workers?mission=beta")
+        ids = {w["id"] for w in r.json()}
+        assert ids == {"w2"}
+
+    def test_api_workers_unknown_mission_empty(self, client):
+        r = client.get("/api/workers?mission=ghost")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_index_html_renders_switcher(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "mission-select" in r.text

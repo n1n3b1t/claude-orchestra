@@ -45,11 +45,30 @@ def index(request: Request) -> HTMLResponse:
 
 # ---- REST ----
 
-@app.get("/api/workers")
-def list_workers_api() -> list[dict[str, Any]]:
+@app.get("/api/missions")
+def list_missions_api() -> list[dict[str, Any]]:
     conn = _conn()
     try:
-        return [dataclasses.asdict(w) for w in state.list_workers(conn)]
+        return [dataclasses.asdict(m) for m in state.list_missions(conn)]
+    finally:
+        conn.close()
+
+
+@app.get("/api/workers")
+def list_workers_api(mission: str | None = None) -> list[dict[str, Any]]:
+    conn = _conn()
+    try:
+        if mission is None:
+            return [dataclasses.asdict(w) for w in state.list_workers(conn)]
+        # Filter by mission slug.
+        m = state.get_mission_by_slug(conn, mission)
+        if m is None:
+            return []
+        rows = conn.execute(
+            "SELECT * FROM workers WHERE mission_id = ? ORDER BY started_at ASC",
+            (m.id,),
+        ).fetchall()
+        return [dataclasses.asdict(state._row_to_worker(r)) for r in rows]
     finally:
         conn.close()
 
