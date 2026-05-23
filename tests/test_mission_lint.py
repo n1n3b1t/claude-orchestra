@@ -236,9 +236,9 @@ class TestRender:
 
 class TestBundledKanban:
     def test_kanban_mission_lints_clean(self) -> None:
-        """examples/kanban/mission.md should produce no errors (warnings allowed)."""
+        """missions/kanban/mission.md should produce no errors (warnings allowed)."""
         repo_root = Path(__file__).resolve().parent.parent
-        mission = repo_root / "examples" / "kanban" / "mission.md"
+        mission = repo_root / "missions" / "kanban" / "mission.md"
         assert mission.is_file(), f"missing fixture: {mission}"
         findings = mission_lint.lint(mission, project_root=repo_root)
         errors = [f for f in findings if f.severity == "error"]

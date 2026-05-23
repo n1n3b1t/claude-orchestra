@@ -54,7 +54,7 @@ inherit the file.
 
 ## Acceptance
 
-- `examples/kanban/verifier.sh` exits 0 against a running server.
+- `missions/kanban/verifier.sh` exits 0 against a running server.
 - The verifier checks: `/api/health` returns 200, a POST to `/api/boards`
   returns a JSON `{ "id": ..., "name": ... }`, a POST to that board's
   `/cards` returns a card with the requested `title`, a PATCH to
@@ -74,7 +74,7 @@ Spawn in this order:
    contract above, or a refined version) and commits it on main; calls
    `orchestra worker done` when committed.
    - Brief at `.orchestra/briefs/architect.md`, role at
-     `examples/kanban/roles/architect.md`.
+     `missions/kanban/.orchestra/roles/architect.md`.
 
 After architect's branch is merged into main, spawn three engineers in
 parallel:
@@ -101,7 +101,7 @@ After all three are merged, spawn the reviewer:
 ## VERIFIER
 
 ```bash
-bash examples/kanban/verifier.sh
+bash missions/kanban/verifier.sh
 ```
 
 ## PM PROTOCOL

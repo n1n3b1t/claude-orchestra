@@ -31,7 +31,7 @@ pip install -e ".[dev]"
 # Run orchestra against a project (this repo or any other):
 orchestra init                                # creates .orchestra/ + merges .claude/settings.local.json
 orchestra spawn <id> <model> "<task>"         # single-worker v0 path
-orchestra spawn pm opus "" --role pm --brief examples/urlshortener-mission.md
+orchestra spawn pm opus "" --role pm --brief missions/urlshortener/mission.md
 orchestra status                              # snapshot of all workers
 orchestra tail <id>                           # follow the pane
 orchestra dash                                # FastAPI dashboard on :8765
@@ -87,6 +87,16 @@ Each engineer is spawned with `--worktree <name>`, which creates a git worktree 
 
 **Important quirk:** a git worktree has a `.git` *file* (gitlink), not a `.git/` directory. Claude Code's project-root detection stops at that boundary, so the engineer's session **does not** inherit the parent project's `.claude/settings.local.json`. To make hooks fire inside worktrees, `orchestra/worktree.py:add` also runs `settings_merge.ensure_hooks(<worktree>/.claude/settings.local.json)`. If you ever change how hooks are detected, this is the critical cross-module invariant.
 
+**Worktree namespace:** engineers' worktrees live at `worktrees/<mission_slug>/<worker_id>` on branch `orch/<mission_slug>/<worker_id>`. The mission slug is resolved by `orchestra/worktree.py:_resolve_mission_slug` — it reads the currently-running `missions` row when not passed explicitly. If you change how the slug is resolved, also update `cli._branch_for` (the merge/reap path).
+
+### Missions
+
+`state.db.missions` is the canonical record of every orchestrated run. Each row has a unique slug, a path to its mission file, a status (`running | done | failed | aborted | archived`), and timestamps. Worker rows carry a `mission_id` foreign key.
+
+Only one mission may have `status='running'` at a time — `orchestra run` enforces this via a pre-flight check that consults `state.get_running_mission`. Direct `orchestra spawn` invocations outside a mission inherit the running one if any; otherwise they leave `mission_id = NULL` (legacy workers from v2.3 are backfilled under a single `legacy-<ts>` archived mission on first init).
+
+Worktrees and branches are namespaced under the mission slug: `worktrees/<slug>/<id>` on `orch/<slug>/<id>`. Two missions can have an engineer named `backend` without collision. Legacy pre-v2.4 worktrees may still exist at the old flat paths (`worktrees/<id>`); they are not auto-migrated by the runtime — clean them up with `git worktree remove` if needed.
+
 ### Two prompt-template modules
 
 - `orchestra/prompts.py` — v0 single-role template (`render_startup_prompt`). Still used when `--role` is absent on spawn. Don't merge it with role_prompts.
@@ -115,6 +125,10 @@ Both timeouts are "soft": on timeout, status becomes `stale_spawn` and the spawn
 
 These are the commands the PM (and any user) uses to coordinate:
 
+- `orchestra mission new <slug>` — scaffolds `missions/<slug>/{mission.md, verifier.sh}`
+- `orchestra mission list` — lists all missions in `state.db` with status + timestamps
+- `orchestra mission show <slug>` — detailed view of one mission (workers, events)
+- `orchestra mission run <slug>` — shortcut for `orchestra run missions/<slug>/mission.md`
 - `orchestra send <id> "<msg>"` — types into a worker's pane (PM → engineer nudge)
 - `orchestra answer <escalation_id> "<answer>"` — resolves an escalation + delivers the answer to the asker's pane
 - `orchestra poll [--timeout 30] [--caller pm]` — blocking; returns the bounded state snapshot. Cursor is per-caller at `.orchestra/poll-cursor.<caller>`

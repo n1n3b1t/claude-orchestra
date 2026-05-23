@@ -54,7 +54,7 @@ mkdir -p "$PROJECT_DIR"
   && git init -q -b main \
   && git config user.email "orch@local" \
   && git config user.name "orch" \
-  && cp "$REPO_ROOT/examples/urlshortener-verifier.sh" verifier.sh \
+  && cp "$REPO_ROOT/missions/urlshortener/verifier.sh" verifier.sh \
   && chmod +x verifier.sh \
   && git add verifier.sh \
   && git commit -q -m "seed: verifier" )
@@ -166,9 +166,9 @@ WATCHDOG_PID=$!
 
 # --- Kick off the PM --------------------------------------------------
 cd "$PROJECT_DIR"
-orchestra spawn pm opus "$(cat "$REPO_ROOT/examples/urlshortener-mission.md")" \
+orchestra spawn pm opus "$(cat "$REPO_ROOT/missions/urlshortener/mission.md")" \
   --role pm \
-  --brief "$REPO_ROOT/examples/urlshortener-mission.md"
+  --brief "$REPO_ROOT/missions/urlshortener/mission.md"
 
 # --- Wait for watchdog to decide --------------------------------------
 wait "$WATCHDOG_PID" || true

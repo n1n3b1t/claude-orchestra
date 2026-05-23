@@ -4,34 +4,34 @@
     {
       "id": 17,
       "subject": "Task 1: State layer — missions table, mission_id, migration, CRUD",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Land the SQLite schema additions, the Mission dataclass, the CRUD helpers, and the one-shot legacy-archive migration.\n\n**Files:** orchestra/state.py, tests/test_state.py\n\n**Verify:** `.venv/bin/pytest tests/test_state.py -v && .venv/bin/mypy orchestra/state.py`\n\nSee plan Task 1 for the full body.\n\n```json:metadata\n{\"files\": [\"orchestra/state.py\", \"tests/test_state.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_state.py -v && .venv/bin/mypy orchestra/state.py\", \"acceptanceCriteria\": [\"missions table + index\", \"mission_id ALTER on workers\", \"legacy backfill\", \"fresh DB no legacy row\", \"idempotent\", \"Mission dataclass\", \"CRUD complete\", \"tests + mypy + ruff green\"]}\n```"
     },
     {
       "id": 18,
       "subject": "Task 2: Mission CLI commands — new/list/show/run",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [17],
       "description": "**Goal:** Add the `orchestra mission new|list|show|run` surface that uses Task 1's state CRUD.\n\n**Files:** orchestra/missions.py, orchestra/cli.py, tests/test_missions.py, tests/test_cli.py\n\n**Verify:** `.venv/bin/pytest tests/test_missions.py tests/test_cli.py -v && .venv/bin/mypy orchestra/missions.py orchestra/cli.py`\n\nSee plan Task 2.\n\n```json:metadata\n{\"files\": [\"orchestra/missions.py\", \"orchestra/cli.py\", \"tests/test_missions.py\", \"tests/test_cli.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_missions.py tests/test_cli.py -v && .venv/bin/mypy orchestra/missions.py orchestra/cli.py\", \"acceptanceCriteria\": [\"mission new scaffolds dir + verifier.sh executable\", \"slug validation\", \"collision check (disk + table)\", \"mission list table; running bold\", \"mission show 3 blocks\", \"mission run shortcut + flags\"]}\n```"
     },
     {
       "id": 19,
       "subject": "Task 3: orchestra run lifecycle — sequential gate + mission row",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [17],
       "description": "**Goal:** Wire mission lifecycle into run_mission.\n\n**Files:** orchestra/run.py, orchestra/spawn.py (temp), tests/test_run.py\n\n**Verify:** `.venv/bin/pytest tests/test_run.py -v && .venv/bin/mypy orchestra/run.py`\n\nSee plan Task 3.\n\n```json:metadata\n{\"files\": [\"orchestra/run.py\", \"orchestra/spawn.py\", \"tests/test_run.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_run.py -v && .venv/bin/mypy orchestra/run.py\", \"acceptanceCriteria\": [\"sequential gate blocks\", \"slug inferred from path; auto with suffix\", \"mission row inserted before PM\", \"PM-row preflight scoped\", \"terminal exit code mapping\", \"tests + mypy clean\"]}\n```"
     },
     {
       "id": 20,
       "subject": "Task 4: Worktree + spawn namespacing, merge/reap lookup",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [19],
       "description": "**Goal:** Namespace engineer worktrees + branches by mission slug; merge/reap resolve via worker.mission_id.\n\n**Files:** orchestra/worktree.py, orchestra/spawn.py, orchestra/state.py, orchestra/cli.py, tests/test_worktree.py, tests/test_spawn.py\n\n**Verify:** `.venv/bin/pytest tests/test_worktree.py tests/test_spawn.py tests/test_run.py tests/test_cli.py -v && .venv/bin/mypy orchestra/state.py orchestra/spawn.py orchestra/worktree.py orchestra/cli.py`\n\nSee plan Task 4.\n\n```json:metadata\n{\"files\": [\"orchestra/worktree.py\", \"orchestra/spawn.py\", \"orchestra/state.py\", \"orchestra/cli.py\", \"tests/test_worktree.py\", \"tests/test_spawn.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_worktree.py tests/test_spawn.py tests/test_run.py tests/test_cli.py -v && .venv/bin/mypy orchestra/state.py orchestra/spawn.py orchestra/worktree.py orchestra/cli.py\", \"acceptanceCriteria\": [\"worktree.add namespaces path+branch\", \"running-mission fallback when slug None\", \"create_worker accepts mission_id\", \"Worker dataclass has mission_id\", \"spawn passes id+slug; Task 3 hack removed\", \"_reap and merge resolve via mission_id\"]}\n```"
     },
     {
       "id": 21,
       "subject": "Task 5: Dashboard mission switcher + /missions page",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [19],
       "description": "**Goal:** Surface missions in the FastAPI dashboard.\n\n**Files:** orchestra/web.py, tests/test_web.py\n\n**Verify:** `.venv/bin/pytest tests/test_web.py -v && .venv/bin/mypy orchestra/web.py && .venv/bin/ruff check orchestra/web.py tests/test_web.py`\n\nSee plan Task 5. NOTE: less prescriptive than other tasks because web.py templating strategy was not read at plan time — match what exists.\n\n```json:metadata\n{\"files\": [\"orchestra/web.py\", \"tests/test_web.py\"], \"verifyCommand\": \".venv/bin/pytest tests/test_web.py -v && .venv/bin/mypy orchestra/web.py && .venv/bin/ruff check orchestra/web.py tests/test_web.py\", \"acceptanceCriteria\": [\"/missions HTML route\", \"?mission=<slug> filter on workers/events\", \"default mission resolution: running > most-recent > unfiltered\", \"top-of-page switcher\", \"tests pass (install sse-starlette if missing)\"]}\n```"
     },
