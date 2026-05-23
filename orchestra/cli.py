@@ -319,6 +319,11 @@ def mission_new(slug: str = typer.Argument(..., metavar="SLUG")) -> None:
     """Scaffold missions/<slug>/{mission.md, verifier.sh}."""
     from orchestra import missions as missions_mod
     cwd = Path.cwd()
+    try:
+        missions_mod.validate_slug(slug)
+    except missions_mod.InvalidSlugError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     db_path = _state_db()
     if db_path.exists():
         with _open_db() as conn:
@@ -328,11 +333,6 @@ def mission_new(slug: str = typer.Argument(..., metavar="SLUG")) -> None:
                     err=True,
                 )
                 raise typer.Exit(code=2)
-    try:
-        missions_mod.validate_slug(slug)
-    except missions_mod.InvalidSlugError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=2) from exc
     try:
         target = missions_mod.scaffold_mission_dir(cwd, slug=slug)
     except missions_mod.SlugCollisionError as exc:
@@ -434,6 +434,7 @@ def mission_run(
     allow_dirty: bool = typer.Option(False, "--allow-dirty"),
 ) -> None:
     """Shortcut: orchestra run missions/<slug>/mission.md."""
+    _require_initialized()
     mission_path = Path("missions") / slug / "mission.md"
     if not mission_path.exists():
         typer.echo(
