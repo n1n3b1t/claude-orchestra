@@ -174,6 +174,7 @@ def spawn_worker(
     brief: str | None = None,
     worktree_name: str | None = None,
     exclusive_resource: str | None = None,
+    mission_id: int | None = None,
 ) -> None:
     branch = f"orch/{worker_id}"
     pane_target = f"{session_name}:{worker_id}"
@@ -186,6 +187,13 @@ def spawn_worker(
         role=role or "engineer",
         worktree=worktree_name,
     )
+    # TEMPORARY — Task 4 will replace with a proper create_worker kwarg.
+    if mission_id is not None:
+        conn.execute(
+            "UPDATE workers SET mission_id = ? WHERE id = ?",
+            (mission_id, worker_id),
+        )
+        conn.commit()
     state.record_event(
         conn, "spawn_start", worker_id=worker_id, task=task, model=model,
         role=role, worktree=worktree_name,
