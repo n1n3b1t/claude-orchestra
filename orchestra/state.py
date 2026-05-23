@@ -108,6 +108,7 @@ class Worker:
     updated_at: str
     role: str = "engineer"
     worktree: str | None = None
+    mission_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +283,7 @@ def _row_to_worker(row: sqlite3.Row) -> Worker:
         updated_at=row["updated_at"],
         role=row["role"],
         worktree=row["worktree"],
+        mission_id=row["mission_id"],
     )
 
 
@@ -296,16 +298,17 @@ def create_worker(
     status: str = "spawning",
     role: str = "engineer",
     worktree: str | None = None,
+    mission_id: int | None = None,
 ) -> Worker:
     ts = now_iso()
     conn.execute(
         """
         INSERT INTO workers (id, task, model, branch, pane_target,
                              status, progress, turns, started_at, updated_at,
-                             role, worktree)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?)
+                             role, worktree, mission_id)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?)
         """,
-        (id, task, model, branch, pane_target, status, ts, ts, role, worktree),
+        (id, task, model, branch, pane_target, status, ts, ts, role, worktree, mission_id),
     )
     got = get_worker(conn, id)
     assert got is not None  # just inserted
@@ -315,6 +318,22 @@ def create_worker(
 def get_worker(conn: sqlite3.Connection, worker_id: str) -> Worker | None:
     row = conn.execute("SELECT * FROM workers WHERE id = ?", (worker_id,)).fetchone()
     return _row_to_worker(row) if row else None
+
+
+def get_mission_slug_for_worker(
+    conn: sqlite3.Connection, worker_id: str,
+) -> str | None:
+    """Resolve the mission slug for a worker, or None if no mission_id set."""
+    row = conn.execute(
+        "SELECT m.slug FROM workers w "
+        "LEFT JOIN missions m ON m.id = w.mission_id "
+        "WHERE w.id = ?",
+        (worker_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    slug: str | None = row[0]  # may be None if mission_id was NULL
+    return slug
 
 
 def list_workers(conn: sqlite3.Connection) -> list[Worker]:

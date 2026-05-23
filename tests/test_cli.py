@@ -488,7 +488,7 @@ class TestMergeReap:
         monkeypatch.setattr(cli.subprocess, "run", fake_run)
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: None,
+            lambda project_root, *, name, worker_id, mission_slug=None: None,
         )
         with cli._open_db() as conn:
             state.create_worker(
@@ -509,7 +509,7 @@ class TestMergeReap:
         _init_in(tmp_path, monkeypatch)
         from orchestra import worktree as wt_mod
         calls: list = []
-        def fake_remove(project_root, *, name, worker_id):  # noqa: ANN001
+        def fake_remove(project_root, *, name, worker_id, mission_slug=None):  # noqa: ANN001
             calls.append({"project_root": project_root,
                           "name": name, "worker_id": worker_id})
         monkeypatch.setattr(wt_mod, "remove", fake_remove)
@@ -561,7 +561,7 @@ class TestMergeReap:
         # Simulate the real worktree.remove's no-op-when-missing behaviour.
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: None,
+            lambda project_root, *, name, worker_id, mission_slug=None: None,
         )
         with cli._open_db() as conn:
             state.create_worker(
@@ -607,7 +607,7 @@ class TestReapDefault:
         remove_calls: list[dict[str, object]] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(
                 {"project_root": project_root, "name": name, "worker_id": worker_id}
             ),
         )
@@ -638,7 +638,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         self._seed("backend")
         result = runner.invoke(app, ["merge", "backend"])
@@ -669,7 +669,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         for wid in ("backend", "web", "cli"):
             self._seed(wid)
@@ -715,7 +715,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         self._seed("backend")
         result = runner.invoke(app, ["merge", "backend", "--keep"])
@@ -741,7 +741,7 @@ class TestReapDefault:
         remove_calls: list[str] = []
         monkeypatch.setattr(
             wt_mod, "remove",
-            lambda project_root, *, name, worker_id: remove_calls.append(name),
+            lambda project_root, *, name, worker_id, mission_slug=None: remove_calls.append(name),
         )
         for wid in ("backend", "web"):
             self._seed(wid)

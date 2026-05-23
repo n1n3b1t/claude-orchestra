@@ -617,6 +617,17 @@ def poll_command(
     typer.echo(snapshot)
 
 
+def _branch_for(worker_id: str) -> str:
+    """Return the git branch name for a worker, scoping by mission slug if any.
+
+    Legacy workers (mission_id IS NULL) fall back to the flat ``orch/<worker_id>``
+    form for back-compat.
+    """
+    with _open_db() as conn:
+        slug = state.get_mission_slug_for_worker(conn, worker_id)
+    return f"orch/{slug}/{worker_id}" if slug else f"orch/{worker_id}"
+
+
 def _reap(worker_id: str) -> bool:
     """Remove the worker's worktree, delete its branch, record the event.
 
@@ -627,7 +638,9 @@ def _reap(worker_id: str) -> bool:
         w = state.get_worker(conn, worker_id)
         if w is None or w.worktree is None:
             return False
-        wt_mod.remove(Path.cwd(), name=w.worktree, worker_id=worker_id)
+        mission_slug = state.get_mission_slug_for_worker(conn, worker_id)
+        wt_mod.remove(Path.cwd(), name=w.worktree, worker_id=worker_id,
+                      mission_slug=mission_slug)
         state.record_event(conn, "worktree_reaped", worker_id=worker_id,
                            name=w.worktree)
         return True
@@ -683,7 +696,7 @@ def merge_command(
     # Single-arg legacy path: preserve exact pre-existing output + exit code.
     if not batch:
         wid = ids[0]
-        branch = f"orch/{wid}"
+        branch = _branch_for(wid)
         with _open_db() as conn:
             state.record_event(conn, "merge_attempted", worker_id=wid, branch=branch)
             proc = subprocess.run(
@@ -713,7 +726,7 @@ def merge_command(
             if aborted:
                 results.append({"id": wid, "status": "skipped"})
                 continue
-            branch = f"orch/{wid}"
+            branch = _branch_for(wid)
             state.record_event(conn, "merge_attempted", worker_id=wid, branch=branch)
             proc = subprocess.run(
                 ["git", "-C", str(project_root), "merge", "--no-edit", branch],

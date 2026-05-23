@@ -462,3 +462,60 @@ class TestLegacyMigration:
         conn = state.connect(tmp_db)
         state.init_schema(conn)
         assert state.list_missions(conn) == []
+
+
+class TestWorkerMissionId:
+    def test_create_worker_with_mission_id(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        mid = state.create_mission(conn, slug="alpha", mission_path="p")
+        w = state.create_worker(
+            conn, id="eng1", task="t", model="sonnet",
+            branch="orch/alpha/eng1", pane_target="s:1",
+            mission_id=mid,
+        )
+        assert w.mission_id == mid
+        got = state.get_worker(conn, "eng1")
+        assert got is not None
+        assert got.mission_id == mid
+
+    def test_create_worker_without_mission_id_is_null(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        w = state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="s:1",
+        )
+        # _migrate_legacy_workers fires on a fresh DB with workers but no missions —
+        # but here we insert the worker via create_worker (after init_schema, which
+        # runs _migrate_legacy_workers on an empty workers table, so missions stays
+        # empty). The new worker has mission_id=None.
+        assert w.mission_id is None
+
+    def test_get_mission_slug_for_worker_returns_slug(self, tmp_db: Path) -> None:
+        conn = _open(tmp_db)
+        mid = state.create_mission(conn, slug="beta", mission_path="p")
+        state.create_worker(
+            conn, id="eng1", task="t", model="sonnet",
+            branch="orch/beta/eng1", pane_target="s:1",
+            mission_id=mid,
+        )
+        slug = state.get_mission_slug_for_worker(conn, "eng1")
+        assert slug == "beta"
+
+    def test_get_mission_slug_for_worker_returns_none_when_no_mission(
+        self, tmp_db: Path
+    ) -> None:
+        conn = _open(tmp_db)
+        state.create_worker(
+            conn, id="w1", task="t", model="sonnet",
+            branch="orch/w1", pane_target="s:1",
+        )
+        slug = state.get_mission_slug_for_worker(conn, "w1")
+        # mission_id is NULL → LEFT JOIN returns NULL slug
+        assert slug is None
+
+    def test_get_mission_slug_for_unknown_worker_returns_none(
+        self, tmp_db: Path
+    ) -> None:
+        conn = _open(tmp_db)
+        slug = state.get_mission_slug_for_worker(conn, "ghost")
+        assert slug is None

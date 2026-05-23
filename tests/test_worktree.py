@@ -5,7 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from orchestra import worktree
+from orchestra import state, worktree
 from orchestra.settings_merge import HOOK_MARKER
 
 
@@ -68,3 +68,66 @@ class TestAddRemove:
             assert any(HOOK_MARKER in cmd for cmd in commands), (
                 f"No orchestra hook command found for {event} in {commands}"
             )
+
+
+class TestNamespacedWorktree:
+    def test_add_uses_mission_slug(self, tmp_path: Path) -> None:
+        """add() with mission_slug creates worktrees/<slug>/<name> on orch/<slug>/<id>."""
+        _init_repo(tmp_path)
+        path = worktree.add(tmp_path, name="backend", worker_id="backend",
+                            mission_slug="alpha")
+        assert path == tmp_path / "worktrees" / "alpha" / "backend"
+        assert path.exists()
+        branches = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "orch/alpha/backend" in branches
+
+    def test_remove_uses_mission_slug(self, tmp_path: Path) -> None:
+        """remove() with mission_slug tears down the namespaced worktree + branch."""
+        _init_repo(tmp_path)
+        worktree.add(tmp_path, name="backend", worker_id="backend",
+                     mission_slug="alpha")
+        worktree.remove(tmp_path, name="backend", worker_id="backend",
+                        mission_slug="alpha")
+        assert not (tmp_path / "worktrees" / "alpha" / "backend").exists()
+        branches = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "orch/alpha/backend" not in branches
+
+    def test_add_legacy_flat_layout_when_no_mission(self, tmp_path: Path) -> None:
+        """When no mission is running and no slug passed, use legacy flat layout."""
+        _init_repo(tmp_path)
+        # No .orchestra/state.db → _resolve_mission_slug returns None → flat layout.
+        path = worktree.add(tmp_path, name="backend", worker_id="backend")
+        assert path == tmp_path / "worktrees" / "backend"
+        assert path.exists()
+        branches = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "orch/backend" in branches
+
+    def test_add_reads_running_mission_from_state_db(self, tmp_path: Path) -> None:
+        """When no slug is passed, add() reads the running mission from state.db."""
+        _init_repo(tmp_path)
+        # Create a .orchestra/state.db with a running mission.
+        orch_dir = tmp_path / ".orchestra"
+        orch_dir.mkdir()
+        db_path = orch_dir / "state.db"
+        conn = state.connect(db_path)
+        state.init_schema(conn)
+        state.create_mission(conn, slug="beta", mission_path="/tmp/m.md")
+        conn.close()
+
+        path = worktree.add(tmp_path, name="frontend", worker_id="frontend")
+        assert path == tmp_path / "worktrees" / "beta" / "frontend"
+        assert path.exists()
+        branches = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "orch/beta/frontend" in branches

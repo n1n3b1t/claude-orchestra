@@ -176,8 +176,23 @@ def spawn_worker(
     exclusive_resource: str | None = None,
     mission_id: int | None = None,
 ) -> None:
-    branch = f"orch/{worker_id}"
     pane_target = f"{session_name}:{worker_id}"
+
+    # Inherit running mission if caller did not supply one explicitly.
+    running_mission = None
+    if mission_id is None:
+        running_mission = state.get_running_mission(conn)
+        if running_mission is not None:
+            mission_id = running_mission.id
+    else:
+        running_mission = state.get_running_mission(conn)
+
+    # Branch name is set after mission_id resolution so it uses the slug when
+    # available. Legacy (no mission) keeps the flat orch/<worker_id> form.
+    if mission_id is not None and running_mission is not None:
+        branch = f"orch/{running_mission.slug}/{worker_id}"
+    else:
+        branch = f"orch/{worker_id}"
 
     # Step 1: worker row — created before any external operations so that
     # failures always have an audit trail. Uses the caller's conn.
@@ -186,14 +201,8 @@ def spawn_worker(
         branch=branch, pane_target=pane_target,
         role=role or "engineer",
         worktree=worktree_name,
+        mission_id=mission_id,
     )
-    # TEMPORARY — Task 4 will replace with a proper create_worker kwarg.
-    if mission_id is not None:
-        conn.execute(
-            "UPDATE workers SET mission_id = ? WHERE id = ?",
-            (mission_id, worker_id),
-        )
-        conn.commit()
     state.record_event(
         conn, "spawn_start", worker_id=worker_id, task=task, model=model,
         role=role, worktree=worktree_name,
@@ -221,7 +230,11 @@ def spawn_worker(
     cwd = project_root
     if worktree_name is not None:
         try:
-            wt = worktree_mod.add(Path(project_root), name=worktree_name, worker_id=worker_id)
+            mission_slug = running_mission.slug if running_mission is not None else None
+            wt = worktree_mod.add(
+                Path(project_root), name=worktree_name, worker_id=worker_id,
+                mission_slug=mission_slug,
+            )
             cwd = str(wt)
             state.record_event(
                 conn, "worktree_created", worker_id=worker_id,
@@ -249,10 +262,8 @@ def spawn_worker(
             return
         if role_perms:
             if worktree_name is not None:
-                settings_path = (
-                    Path(project_root) / "worktrees" / worktree_name
-                    / ".claude" / "settings.local.json"
-                )
+                # cwd is already set to the (possibly namespaced) worktree path.
+                settings_path = Path(cwd) / ".claude" / "settings.local.json"
             else:
                 settings_path = (
                     Path(project_root) / ".claude" / "settings.local.json"
