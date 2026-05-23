@@ -7,7 +7,7 @@ fires.
 Exit codes:
     0   PM emitted `worker_done`.
     2   pre-flight failure (dirty repo, missing mission, missing .orchestra,
-        PM worker row already exists).
+        another mission is already running, or pm row conflict for this mission).
   124   wall-clock watchdog fired.
   125   activity watchdog (no new events) fired.
   126   loop exited without a terminal signal (defensive).
@@ -160,14 +160,16 @@ def run_mission(
             flush=True,
         )
 
-    # ---- Slug resolution ----
-    mission_slug = _resolve_slug(mission_path, state_db_path)
-
-    # ---- Create mission row (status='running') ----
+    # ---- Normalize mission path relative to project root ----
     try:
         relative = str(mission_path.relative_to(cwd))
     except ValueError:
         relative = str(mission_path)
+
+    # ---- Slug resolution ----
+    mission_slug = _resolve_slug(Path(relative), state_db_path)
+
+    # ---- Create mission row (status='running') ----
     mc = state.connect(state_db_path)
     try:
         mission_id = state.create_mission(
@@ -268,4 +270,5 @@ def run_mission(
         poll_conn.close()
 
     # Defensive: the loop has no break, but mypy + tests can hit this.
+    _close_mission(state_db_path, mission_id, status="failed", exit_code=126)  # pragma: no cover
     return 126  # pragma: no cover

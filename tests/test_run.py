@@ -553,6 +553,31 @@ class TestRunMissionMissions:
         assert rows[0].exit_code == 124
         assert rows[0].ended_at is not None
 
+    def test_activity_watchdog_updates_mission_to_failed_125(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _init_git_repo(tmp_path)
+        mission = tmp_path / "mission.md"
+        mission.write_text("# Mission\n")
+        _commit_mission(tmp_path, mission)
+        _gitignore_orchestra(tmp_path)
+        db = _init_orchestra(tmp_path)
+
+        monkeypatch.setattr(run_mod.spawn, "spawn_worker", _no_op_spawn)
+        monkeypatch.setattr(run_mod, "POLL_INTERVAL_S", 0.05)
+        monkeypatch.chdir(tmp_path)
+
+        rc = run_mod.run_mission(
+            mission, model="opus", max_wallclock=600.0, max_activity=0.5,
+        )
+        assert rc == 125
+        conn = state.connect(db)
+        rows = state.list_missions(conn)
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0].status == "failed"
+        assert rows[0].exit_code == 125
+
 
 class TestCliHelp:
     def test_run_help_prints_and_exits_0(self):
