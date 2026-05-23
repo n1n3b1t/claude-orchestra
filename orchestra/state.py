@@ -248,17 +248,22 @@ def _migrate_legacy_workers(conn: sqlite3.Connection) -> None:
         "legacy-"
         + started_at.replace("-", "").replace(":", "").replace("T", "-")[:13]
     )
-    cur = conn.execute(
-        "INSERT INTO missions (slug, mission_path, status, started_at, ended_at) "
-        "VALUES (?, ?, 'archived', ?, ?)",
-        (slug, "(unknown)", started_at, ended_at),
-    )
-    legacy_id = cur.lastrowid
-    conn.execute(
-        "UPDATE workers SET mission_id = ? WHERE mission_id IS NULL",
-        (legacy_id,),
-    )
-    conn.commit()
+    conn.execute("BEGIN")
+    try:
+        cur = conn.execute(
+            "INSERT INTO missions (slug, mission_path, status, started_at, ended_at) "
+            "VALUES (?, ?, 'archived', ?, ?)",
+            (slug, "(unknown)", started_at, ended_at),
+        )
+        legacy_id = cur.lastrowid
+        conn.execute(
+            "UPDATE workers SET mission_id = ? WHERE mission_id IS NULL",
+            (legacy_id,),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 # ---- Workers ----
@@ -424,10 +429,12 @@ def update_mission(
         sets.append("ended_at = ?")
         args.append(ended_at)
     if not sets:
-        return
+        raise ValueError("update_mission requires at least one field to update")
     args.append(mission_id)
-    conn.execute(f"UPDATE missions SET {', '.join(sets)} WHERE id = ?", args)
+    cur = conn.execute(f"UPDATE missions SET {', '.join(sets)} WHERE id = ?", args)
     conn.commit()
+    if cur.rowcount == 0:
+        raise KeyError(f"mission {mission_id} not found")
 
 
 # ---- Events ----

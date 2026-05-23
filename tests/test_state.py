@@ -335,7 +335,9 @@ class TestMissionsCRUD:
         state.init_schema(conn)
         mid = state.create_mission(conn, slug="m1", mission_path="missions/m1/mission.md")
         row = state.get_mission_by_slug(conn, "m1")
-        assert row is not None and row.id == mid and row.status == "running"
+        assert row is not None
+        assert row.id == mid
+        assert row.status == "running"
 
     def test_get_running_mission(self, tmp_db: Path) -> None:
         conn = state.connect(tmp_db)
@@ -343,7 +345,8 @@ class TestMissionsCRUD:
         assert state.get_running_mission(conn) is None
         state.create_mission(conn, slug="m1", mission_path="p")
         running = state.get_running_mission(conn)
-        assert running is not None and running.slug == "m1"
+        assert running is not None
+        assert running.slug == "m1"
 
     def test_get_running_mission_raises_when_multiple(self, tmp_db: Path) -> None:
         conn = state.connect(tmp_db)
@@ -361,17 +364,51 @@ class TestMissionsCRUD:
                              ended_at=state.now_iso())
         row = state.get_mission_by_slug(conn, "m1")
         assert row is not None
-        assert row.status == "done" and row.exit_code == 0 and row.ended_at is not None
+        assert row.status == "done"
+        assert row.exit_code == 0
+        assert row.ended_at is not None
 
     def test_list_missions_desc_by_started_at(self, tmp_db: Path) -> None:
-        import time
         conn = state.connect(tmp_db)
         state.init_schema(conn)
         state.create_mission(conn, slug="m1", mission_path="p1")
-        time.sleep(0.01)
+        # now_iso() is second-resolution, so m1 and m2 may share started_at.
+        # list_missions falls back to `id DESC` as a tiebreaker.
         state.create_mission(conn, slug="m2", mission_path="p2")
         rows = state.list_missions(conn)
         assert [r.slug for r in rows] == ["m2", "m1"]
+
+
+    def test_duplicate_slug_raises(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        state.create_mission(conn, slug="m1", mission_path="p")
+        with pytest.raises(sqlite3.IntegrityError):
+            state.create_mission(conn, slug="m1", mission_path="p2")
+
+    def test_update_mission_status_only(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        mid = state.create_mission(conn, slug="m1", mission_path="p")
+        state.update_mission(conn, mid, status="aborted")
+        row = state.get_mission_by_slug(conn, "m1")
+        assert row is not None
+        assert row.status == "aborted"
+        assert row.exit_code is None
+        assert row.ended_at is None
+
+    def test_update_mission_raises_on_no_fields(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        mid = state.create_mission(conn, slug="m1", mission_path="p")
+        with pytest.raises(ValueError):
+            state.update_mission(conn, mid)
+
+    def test_update_mission_raises_on_unknown_id(self, tmp_db: Path) -> None:
+        conn = state.connect(tmp_db)
+        state.init_schema(conn)
+        with pytest.raises(KeyError):
+            state.update_mission(conn, 9999, status="done")
 
 
 class TestLegacyMigration:
