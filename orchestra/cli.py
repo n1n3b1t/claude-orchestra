@@ -295,23 +295,162 @@ def run_command(
     raise typer.Exit(rc)
 
 
-@app.command("mission")
-def mission_command(
-    action: str = typer.Argument(..., metavar="ACTION", help="lint"),
+mission_app = typer.Typer(help="Mission utilities.")
+app.add_typer(mission_app, name="mission")
+
+
+@mission_app.command("lint")
+def mission_lint_cmd(
     path: Path = typer.Argument(..., metavar="MISSION_MD"),  # noqa: B008
     strict: bool = typer.Option(
         False, "--strict", help="Promote brief-not-found from warning to error."
     ),
 ) -> None:
-    """Mission utilities. Today: `orchestra mission lint <path>`."""
-    if action != "lint":
-        typer.echo(f"unknown action: {action}", err=True)
-        raise typer.Exit(2)
+    """Lint a mission file."""
     from orchestra import mission_lint
     findings = mission_lint.lint(path, strict=strict)
     typer.echo(mission_lint.render(findings))
     if mission_lint.has_errors(findings):
         raise typer.Exit(2)
+
+
+@mission_app.command("new")
+def mission_new(slug: str = typer.Argument(..., metavar="SLUG")) -> None:
+    """Scaffold missions/<slug>/{mission.md, verifier.sh}."""
+    from orchestra import missions as missions_mod
+    cwd = Path.cwd()
+    db_path = _state_db()
+    if db_path.exists():
+        with _open_db() as conn:
+            if state.get_mission_by_slug(conn, slug) is not None:
+                typer.echo(
+                    f"error: mission slug {slug!r} already exists in state.db",
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+    try:
+        missions_mod.validate_slug(slug)
+    except missions_mod.InvalidSlugError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    try:
+        target = missions_mod.scaffold_mission_dir(cwd, slug=slug)
+    except missions_mod.SlugCollisionError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"scaffolded {target.relative_to(cwd)}")
+
+
+def _format_mission_duration(start: str, end: str | None) -> str:
+    if end is None:
+        return "-"
+    from datetime import datetime
+    s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    e = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    total = int((e - s).total_seconds())
+    h, rem = divmod(total, 3600)
+    mi, sec = divmod(rem, 60)
+    return f"{h:02d}:{mi:02d}:{sec:02d}"
+
+
+@mission_app.command("list")
+def mission_list() -> None:
+    """Print a markdown table of every mission, sorted by started_at desc."""
+    _require_initialized()
+    with _open_db() as conn:
+        rows = state.list_missions(conn)
+    if not rows:
+        typer.echo("(no missions yet)")
+        return
+    typer.echo("| slug | status | started_at | duration | exit |")
+    typer.echo("|------|--------|------------|----------|------|")
+    for m in rows:
+        dur = _format_mission_duration(m.started_at, m.ended_at)
+        exit_str = "-" if m.exit_code is None else str(m.exit_code)
+        slug_cell = f"**{m.slug}**" if m.status == "running" else m.slug
+        typer.echo(
+            f"| {slug_cell} | {m.status} | {m.started_at} | {dur} | {exit_str} |"
+        )
+
+
+@mission_app.command("show")
+def mission_show(slug: str = typer.Argument(..., metavar="SLUG")) -> None:
+    """Print mission metadata + worker summary + last 20 events."""
+    _require_initialized()
+    with _open_db() as conn:
+        m = state.get_mission_by_slug(conn, slug)
+        if m is None:
+            typer.echo(f"error: no mission with slug {slug!r}", err=True)
+            raise typer.Exit(code=2)
+        worker_rows = conn.execute(
+            "SELECT id, role, model, status, started_at, turns "
+            "FROM workers WHERE mission_id = ? ORDER BY started_at",
+            (m.id,),
+        ).fetchall()
+        if worker_rows:
+            worker_ids = [w["id"] for w in worker_rows]
+            placeholders = ",".join("?" * len(worker_ids))
+            ev_rows_desc = conn.execute(
+                f"SELECT * FROM events WHERE worker_id IN ({placeholders}) "
+                "ORDER BY id DESC LIMIT 20",
+                worker_ids,
+            ).fetchall()
+            ev_rows = list(reversed(ev_rows_desc))
+        else:
+            ev_rows = []
+    # Mission metadata
+    typer.echo(f"# mission {m.slug}")
+    typer.echo(f"- status: {m.status}")
+    typer.echo(f"- mission_path: {m.mission_path}")
+    typer.echo(f"- started_at: {m.started_at}")
+    typer.echo(f"- ended_at: {m.ended_at or '-'}")
+    typer.echo(f"- duration: {_format_mission_duration(m.started_at, m.ended_at)}")
+    typer.echo(f"- exit_code: {m.exit_code if m.exit_code is not None else '-'}")
+    typer.echo("\n## workers")
+    if not worker_rows:
+        typer.echo("(none)")
+    else:
+        typer.echo("| id | role | model | status | started_at | turns |")
+        typer.echo("|----|------|-------|--------|------------|-------|")
+        for w in worker_rows:
+            typer.echo(
+                f"| {w['id']} | {w['role']} | {w['model']} | "
+                f"{w['status']} | {w['started_at']} | {w['turns']} |"
+            )
+    typer.echo("\n## last 20 events")
+    if not ev_rows:
+        typer.echo("(none)")
+    else:
+        for ev in ev_rows:
+            typer.echo(f"- {ev['ts']} {ev['worker_id'] or '-'} {ev['kind']}")
+
+
+@mission_app.command("run")
+def mission_run(
+    slug: str = typer.Argument(..., metavar="SLUG"),
+    model: str = typer.Option("opus", "--model"),
+    max_wallclock: float = typer.Option(5400.0, "--max-wallclock"),
+    max_activity: float = typer.Option(600.0, "--max-activity"),
+    allow_dirty: bool = typer.Option(False, "--allow-dirty"),
+) -> None:
+    """Shortcut: orchestra run missions/<slug>/mission.md."""
+    mission_path = Path("missions") / slug / "mission.md"
+    if not mission_path.exists():
+        typer.echo(
+            f"error: {mission_path} does not exist. "
+            f"Run `orchestra mission new {slug}` first.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    from orchestra import run as run_mod
+    code = run_mod.run_mission(
+        mission_path,
+        model=model,
+        max_wallclock=max_wallclock,
+        max_activity=max_activity,
+        allow_dirty=allow_dirty,
+    )
+    raise typer.Exit(code=code)
 
 
 # ---- worker subcommands ----

@@ -756,3 +756,109 @@ class TestReapDefault:
             ]
         assert "merge_ok" in backend_kinds
         assert "worktree_reaped" not in backend_kinds
+
+
+class TestMissionCommands:
+    """Integration tests for orchestra mission new/list/show/run."""
+
+    def _init_project(self, tmp_path: Path) -> None:
+        from orchestra import state
+        (tmp_path / ".orchestra").mkdir()
+        conn = state.connect(tmp_path / ".orchestra" / "state.db")
+        state.init_schema(conn)
+        conn.close()
+
+    def test_mission_new_creates_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "new", "alpha"])
+        assert res.exit_code == 0, res.output
+        assert (tmp_path / "missions" / "alpha" / "mission.md").exists()
+        assert (tmp_path / "missions" / "alpha" / "verifier.sh").exists()
+
+    def test_mission_new_rejects_bad_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "new", "BAD-SLUG"])
+        assert res.exit_code == 2
+
+    def test_mission_list_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "list"])
+        assert res.exit_code == 0
+        assert "(no missions yet)" in res.output
+
+    def test_mission_list_with_running_row_bold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra import state
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        conn = state.connect(tmp_path / ".orchestra" / "state.db")
+        state.create_mission(conn, slug="m1", mission_path="missions/m1/mission.md")
+        conn.close()
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "list"])
+        assert res.exit_code == 0
+        assert "**m1**" in res.output
+
+    def test_mission_show_unknown_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "show", "nope"])
+        assert res.exit_code == 2
+
+    def test_mission_run_missing_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        self._init_project(tmp_path)
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "run", "ghost"])
+        assert res.exit_code == 2
+        assert "does not exist" in res.output
+
+    def test_mission_lint_still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression — the existing `mission lint` command must still work
+        after the subgroup refactor."""
+        from typer.testing import CliRunner
+
+        from orchestra.cli import app
+        monkeypatch.chdir(tmp_path)
+        m = tmp_path / "mission.md"
+        m.write_text("# Mission: hello\n\n## Acceptance\n- thing\n\n"
+                     "## Team\n- engineer\n\nworker_done\n")
+        runner = CliRunner()
+        res = runner.invoke(app, ["mission", "lint", str(m)])
+        assert res.exit_code == 0, res.output
