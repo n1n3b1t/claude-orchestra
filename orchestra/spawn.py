@@ -178,21 +178,28 @@ def spawn_worker(
 ) -> None:
     pane_target = f"{session_name}:{worker_id}"
 
-    # Inherit running mission if caller did not supply one explicitly.
-    running_mission = None
+    # Resolve mission_id and mission_slug. The slug may come from either the
+    # running mission (inherited) or a caller-supplied mission_id (explicit).
+    # Always look up the slug for the supplied mission_id to handle future
+    # scenarios where explicit mission_id != running mission.
+    mission_slug: str | None = None
     if mission_id is None:
         running_mission = state.get_running_mission(conn)
         if running_mission is not None:
             mission_id = running_mission.id
+            mission_slug = running_mission.slug
     else:
-        running_mission = state.get_running_mission(conn)
+        # Caller supplied mission_id explicitly — look up its slug.
+        row = conn.execute(
+            "SELECT slug FROM missions WHERE id = ?",
+            (mission_id,),
+        ).fetchone()
+        if row is not None:
+            mission_slug = row[0]
 
     # Branch name is set after mission_id resolution so it uses the slug when
     # available. Legacy (no mission) keeps the flat orch/<worker_id> form.
-    if mission_id is not None and running_mission is not None:
-        branch = f"orch/{running_mission.slug}/{worker_id}"
-    else:
-        branch = f"orch/{worker_id}"
+    branch = f"orch/{mission_slug}/{worker_id}" if mission_slug is not None else f"orch/{worker_id}"
 
     # Step 1: worker row — created before any external operations so that
     # failures always have an audit trail. Uses the caller's conn.
@@ -230,7 +237,6 @@ def spawn_worker(
     cwd = project_root
     if worktree_name is not None:
         try:
-            mission_slug = running_mission.slug if running_mission is not None else None
             wt = worktree_mod.add(
                 Path(project_root), name=worktree_name, worker_id=worker_id,
                 mission_slug=mission_slug,

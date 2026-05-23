@@ -792,6 +792,7 @@ class TestMissionIdInheritance:
         w = state.get_worker(conn, "w1")
         assert w is not None
         assert w.mission_id == mid
+        assert w.branch == "orch/beta/w1"
 
     def test_no_mission_running_keeps_null_and_flat_branch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
